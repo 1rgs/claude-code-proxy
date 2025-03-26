@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
-Comprehensive test suite for Claude-on-OpenAI Proxy.
+Comprehensive test suite for Claude-on-Deepseek Proxy.
 
 This script provides tests for both streaming and non-streaming requests,
 with various scenarios including tool use, multi-turn conversations,
 and content blocks.
+
+Tests will run against the proxy server using deepseek-chat model by default.
 
 Usage:
   python tests.py                    # Run all tests
   python tests.py --no-streaming     # Skip streaming tests
   python tests.py --simple           # Run only simple tests
   python tests.py --tools            # Run tool-related tests only
+  python tests.py --proxy-only       # Only test the proxy (skip Anthropic API)
+  python tests.py --cot              # Test Chain-of-Thought prompting
 """
 
 import os
@@ -29,23 +33,29 @@ load_dotenv()
 
 # Configuration
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-PROXY_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # Using same key for proxy
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+PROXY_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # Using same key for proxy as would be used with Claude
+
+# URLs
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 PROXY_API_URL = "http://localhost:8082/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-MODEL = "claude-3-sonnet-20240229"  # Change to your preferred model
+
+# Model configuration
+CLAUDE_MODEL = "claude-3-haiku-20240307"  # Used for direct Anthropic API tests
+PROXY_MODEL = "claude-3-haiku-20240307"   # Will be mapped to gemini-2.0-flash by the proxy
 
 # Headers
 anthropic_headers = {
-    "x-api-key": ANTHROPIC_API_KEY,
+    "x-api-key": ANTHROPIC_API_KEY if ANTHROPIC_API_KEY else "invalid-key",
     "anthropic-version": ANTHROPIC_VERSION,
     "content-type": "application/json",
 }
 
 proxy_headers = {
-    "x-api-key": PROXY_API_KEY,
-    "anthropic-version": ANTHROPIC_VERSION,
     "content-type": "application/json",
+    "anthropic-version": ANTHROPIC_VERSION,
 }
 
 # Tool definitions
@@ -103,7 +113,7 @@ search_tool = {
 TEST_SCENARIOS = {
     # Simple text response
     "simple": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 300,
         "messages": [
             {"role": "user", "content": "Hello, world! Can you tell me about Paris in 2-3 sentences?"}
@@ -112,7 +122,7 @@ TEST_SCENARIOS = {
     
     # Basic tool use
     "calculator": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 300,
         "messages": [
             {"role": "user", "content": "What is 135 + 7.5 divided by 2.5?"}
@@ -123,7 +133,7 @@ TEST_SCENARIOS = {
     
     # Multiple tools
     "multi_tool": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 500,
         "temperature": 0.7,
         "top_p": 0.95,
@@ -137,7 +147,7 @@ TEST_SCENARIOS = {
     
     # Multi-turn conversation
     "multi_turn": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 500,
         "messages": [
             {"role": "user", "content": "Let's do some math. What is 240 divided by 8?"},
@@ -150,7 +160,7 @@ TEST_SCENARIOS = {
     
     # Content blocks
     "content_blocks": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 500,
         "messages": [
             {"role": "user", "content": [
@@ -161,9 +171,28 @@ TEST_SCENARIOS = {
         "tool_choice": {"type": "auto"}
     },
     
+    # Chain of Thought test
+    "cot_reasoning": {
+        "model": "claude-3-sonnet-20240229",  # Using Sonnet for reasoning task (maps to deepseek-chat)
+        "max_tokens": 1000,
+        "system": "You are a helpful assistant that uses chain-of-thought reasoning. For complex questions, always break down your reasoning step-by-step before giving an answer.",
+        "messages": [
+            {"role": "user", "content": "If a train travels at 120 km/h and another train travels at 180 km/h in the opposite direction, and they start 900 km apart, how long will it take for them to meet?"}
+        ]
+    },
+    
+    # Code generation test 
+    "code_generation": {
+        "model": "claude-3-sonnet-20240229",  # Using Sonnet for code tasks (maps to deepseek-chat)
+        "max_tokens": 1000,
+        "messages": [
+            {"role": "user", "content": "Write a Python function to check if a string is a palindrome."}
+        ]
+    },
+    
     # Simple streaming test
     "simple_stream": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 100,
         "stream": True,
         "messages": [
@@ -173,7 +202,7 @@ TEST_SCENARIOS = {
     
     # Tool use with streaming
     "calculator_stream": {
-        "model": MODEL,
+        "model": PROXY_MODEL,
         "max_tokens": 300,
         "stream": True,
         "messages": [
@@ -199,7 +228,9 @@ REQUIRED_EVENT_TYPES = {
 def get_response(url, headers, data):
     """Send a request and get the response."""
     start_time = time.time()
-    response = httpx.post(url, headers=headers, json=data, timeout=30)
+    # Use a longer timeout for Sonnet/reasoning tests
+    timeout_val = 60 if "sonnet" in data.get("model", "").lower() else 30
+    response = httpx.post(url, headers=headers, json=data, timeout=timeout_val)
     elapsed = time.time() - start_time
     
     print(f"Response time: {elapsed:.2f} seconds")
@@ -455,7 +486,9 @@ async def stream_response(url, headers, data, stream_name):
             request_data["stream"] = True
             
             start_time = time.time()
-            async with client.stream("POST", url, json=request_data, headers=headers, timeout=30) as response:
+            # Use a longer timeout for Sonnet/reasoning tests
+            timeout_val = 60 if "sonnet" in request_data.get("model", "").lower() else 30
+            async with client.stream("POST", url, json=request_data, headers=headers, timeout=timeout_val) as response:
                 if response.status_code != 200:
                     error_text = await response.aread()
                     stats.has_error = True
@@ -654,8 +687,56 @@ async def run_tests(args):
                 
             # Run the test
             check_tools = "tools" in test_data
-            result = test_request(test_name, test_data, check_tools=check_tools)
-            results[test_name] = result
+            
+            if args.proxy_only:
+                # Only test against the proxy (not Anthropic API)
+                print(f"\n{'='*20} RUNNING PROXY-ONLY TEST: {test_name} {'='*20}")
+                try:
+                    proxy_response = get_response(PROXY_API_URL, proxy_headers, test_data)
+                    
+                    # Check if response is valid
+                    if proxy_response.status_code != 200:
+                        print(f"\n❌ Proxy request failed with status code {proxy_response.status_code}")
+                        print(f"Error: {proxy_response.text}")
+                        results[test_name] = False
+                    else:
+                        # Basic validation
+                        proxy_json = proxy_response.json()
+                        
+                        # Print response info
+                        print("\n--- Proxy Response Structure ---")
+                        print(json.dumps({k: v for k, v in proxy_json.items() if k != "content"}, indent=2))
+                        
+                        # Check basic structure
+                        if (proxy_json.get("role") == "assistant" and 
+                            proxy_json.get("type") == "message" and
+                            "content" in proxy_json and 
+                            isinstance(proxy_json["content"], list) and
+                            len(proxy_json["content"]) > 0):
+                            
+                            # Extract and print text content if available
+                            for item in proxy_json["content"]:
+                                if item.get("type") == "text":
+                                    text = item.get("text", "")
+                                    print("\n--- Proxy Response Text ---")
+                                    print("\n".join(text.strip().split("\n")[:10]))  # First 10 lines
+                                    break
+                            
+                            print(f"\n✅ Test {test_name} passed!")
+                            results[test_name] = True
+                        else:
+                            print(f"\n❌ Test {test_name} failed - invalid response structure")
+                            results[test_name] = False
+                
+                except Exception as e:
+                    print(f"\n❌ Error in test {test_name}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    results[test_name] = False
+            else:
+                # Test against both APIs
+                result = test_request(test_name, test_data, check_tools=check_tools)
+                results[test_name] = result
     
     # Now run streaming tests
     if not args.no_streaming:
@@ -672,10 +753,44 @@ async def run_tests(args):
             # Skip non-tool tests if tools_only
             if args.tools_only and "tools" not in test_data:
                 continue
-                
-            # Run the streaming test
-            result = await test_streaming(test_name, test_data)
-            results[f"{test_name}_streaming"] = result
+            
+            if args.proxy_only:
+                # Only test proxy streaming
+                print(f"\n{'='*20} RUNNING PROXY-ONLY STREAMING TEST: {test_name} {'='*20}")
+                try:
+                    # Make copy and ensure stream flag is set
+                    proxy_data = test_data.copy()
+                    proxy_data["stream"] = True
+                    
+                    # Make the streaming request
+                    proxy_stats, proxy_error = await stream_response(
+                        PROXY_API_URL, proxy_headers, proxy_data, "Proxy"
+                    )
+                    
+                    # Print statistics
+                    print("\n--- Proxy Stream Statistics ---")
+                    proxy_stats.summarize()
+                    
+                    # Check if streaming worked
+                    if proxy_error:
+                        print(f"\n❌ Test {test_name} failed! Proxy had an error: {proxy_error}")
+                        results[f"{test_name}_streaming"] = False
+                    elif proxy_stats.total_chunks > 0:
+                        print(f"\n✅ Test {test_name} passed!")
+                        results[f"{test_name}_streaming"] = True
+                    else:
+                        print(f"\n❌ Test {test_name} failed! No chunks received.")
+                        results[f"{test_name}_streaming"] = False
+                        
+                except Exception as e:
+                    print(f"\n❌ Error in test {test_name}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    results[f"{test_name}_streaming"] = False
+            else:
+                # Run the streaming test against both APIs
+                result = await test_streaming(test_name, test_data)
+                results[f"{test_name}_streaming"] = result
     
     # Print summary
     print("\n\n=========== TEST SUMMARY ===========\n")
@@ -695,18 +810,36 @@ async def run_tests(args):
         return False
 
 async def main():
-    # Check that API key is set
-    if not ANTHROPIC_API_KEY:
-        print("Error: ANTHROPIC_API_KEY not set in .env file")
+    # Check API key configuration
+    if not ANTHROPIC_API_KEY and not (DEEPSEEK_API_KEY or GEMINI_API_KEY):
+        print("Error: Required API keys not set in .env file")
+        print("At least one of DEEPSEEK_API_KEY or GEMINI_API_KEY is required for proxy functionality")
         return
     
     # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Test the Claude-on-OpenAI proxy")
+    parser = argparse.ArgumentParser(
+        description="Test the proxy using Deepseek and Gemini models with Claude Code"
+    )
     parser.add_argument("--no-streaming", action="store_true", help="Skip streaming tests")
     parser.add_argument("--streaming-only", action="store_true", help="Only run streaming tests")
     parser.add_argument("--simple", action="store_true", help="Only run simple tests (no tools)")
     parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
+    parser.add_argument("--proxy-only", action="store_true", help="Only test the proxy (skip Anthropic API)")
+    parser.add_argument("--cot", action="store_true", help="Test Chain-of-Thought prompting")
     args = parser.parse_args()
+    
+    # Validate arguments
+    if not ANTHROPIC_API_KEY and not args.proxy_only:
+        print("Warning: ANTHROPIC_API_KEY not set, forcing --proxy-only mode")
+        args.proxy_only = True
+    
+    # Add CoT test filter logic
+    if args.cot:
+        # Define which tests to run when --cot is specified
+        valid_tests = ["cot_reasoning"]
+        for test_name in list(TEST_SCENARIOS.keys()):
+            if test_name not in valid_tests:
+                del TEST_SCENARIOS[test_name]
     
     # Run tests
     success = await run_tests(args)

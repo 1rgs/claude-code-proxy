@@ -1,0 +1,133 @@
+{
+  "summary": {
+    "total_tests": 10,
+    "passed_tests": 10,
+    "success_rate": 100.0,
+    "duration_seconds": 73.35,
+    "average_response_times": {},
+    "comparison": {}
+  },
+  "results": [
+    {
+      "test_name": "simple_text",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.75,
+      "token_count": {
+        "input": 17,
+        "output": 68
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.7,
+      "token_count": {
+        "input": 17,
+        "output": 49
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.63,
+      "token_count": {
+        "input": 28,
+        "output": 15
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.64,
+      "token_count": {
+        "input": 28,
+        "output": 15
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "multi_turn",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.5,
+      "token_count": {
+        "input": 68,
+        "output": 13
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "multi_turn",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.53,
+      "token_count": {
+        "input": 68,
+        "output": 32
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 16.68,
+      "token_count": {
+        "input": 44,
+        "output": 254
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 16.06,
+      "token_count": {
+        "input": 44,
+        "output": 253
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 18.41,
+      "token_count": {
+        "input": 16,
+        "output": 303
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 18.46,
+      "token_count": {
+        "input": 16,
+        "output": 316
+      },
+      "error": null,
+      "http_status": 200
+    }
+  ],
+  "timestamp": "2025-03-26T01:47:25.673193"
+}

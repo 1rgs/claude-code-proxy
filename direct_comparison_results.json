@@ -1,0 +1,117 @@
+[
+  {
+    "name": "Simple text (Haiku)",
+    "anthropic": {
+      "success": true,
+      "time": 1.0587668418884277,
+      "response": {
+        "id": "msg_01F5MkXg8WCh6kMd668aRut1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-3-haiku-20240307",
+        "content": [
+          {
+            "type": "text",
+            "text": "Paris, the capital of France, is renowned for its iconic landmarks, rich cultural heritage, and picturesque cityscape. It is famous for the Eiffel Tower, the Louvre Museum, Notre-Dame Cathedral, and the charming Parisian neighborhoods with their quaint cafes, boutiques, and cobblestone streets. Paris is also celebrated for its fashion, cuisine, art, and as a global center of education, innovation, and luxury."
+          }
+        ],
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 25,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 99
+        }
+      }
+    },
+    "proxy": {
+      "success": true,
+      "time": 0.670281171798706,
+      "response": {
+        "id": "chatcmpl-c070855e-62f5-4580-8ac5-6b2c367daf9e",
+        "model": "gemini/gemini-2.0-flash",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Paris is renowned for its iconic landmarks like the Eiffel Tower and the Louvre Museum, as well as its rich history, art, and culture. It's also globally recognized as a fashion capital and a culinary center, famous for its haute couture and delicious pastries.\n"
+          }
+        ],
+        "type": "message",
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 17,
+          "output_tokens": 53,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "Complex reasoning (Sonnet)",
+    "anthropic": {
+      "success": false,
+      "time": 0.11397099494934082,
+      "error": "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: claude-3-sonnet-20240229\"}}"
+    },
+    "proxy": {
+      "success": true,
+      "time": 15.71417784690857,
+      "response": {
+        "id": "a3c57fa1-1e69-4d68-bc1c-b8fdb761dd81",
+        "model": "deepseek/deepseek-chat",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "To determine how long it will take for the two trains to meet, we can follow these steps:\n\n### **Given:**\n- **Speed of Train A (V\u2081):** 120 km/h\n- **Speed of Train B (V\u2082):** 180 km/h\n- **Initial Distance Apart (D):** 900 km\n- **Direction:** Opposite (towards each other)\n\n### **Step 1: Calculate the Relative Speed**\nWhen two objects move towards each other, their relative speed is the sum of their individual speeds.\n\n\\[\n\\text{Relative Speed (V)} = V\u2081 + V\u2082 = 120\\,\\text{km/h} + 180\\,\\text{km/h} = 300\\,\\text{km/h}\n\\]\n\n### **Step 2: Determine the Time to Meet**\nTime is calculated by dividing the total distance by the relative speed.\n\n\\[\n\\text{Time (T)} = \\frac{\\text{Distance (D)}}{\\text{Relative Speed (V)}} = \\frac{900\\,\\text{km}}{300\\,\\text{km/h}} = 3\\,\\text{hours}\n\\]\n\n### **Final Answer:**\n\\[\n\\boxed{3\\,\\text{hours}}\n\\]"
+          }
+        ],
+        "type": "message",
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 44,
+          "output_tokens": 251,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "Code generation (Sonnet)",
+    "anthropic": {
+      "success": false,
+      "time": 0.11938714981079102,
+      "error": "{\"type\":\"error\",\"error\":{\"type\":\"not_found_error\",\"message\":\"model: claude-3-sonnet-20240229\"}}"
+    },
+    "proxy": {
+      "success": true,
+      "time": 14.989559650421143,
+      "response": {
+        "id": "b3db7808-d112-4de7-9aca-636a76c11345",
+        "model": "deepseek/deepseek-chat",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Here's a Python function to check if a string is a palindrome:\n\n```python\ndef is_palindrome(s):\n    # Remove non-alphanumeric characters and convert to lowercase\n    cleaned = ''.join(c for c in s if c.isalnum()).lower()\n    # Compare the cleaned string with its reverse\n    return cleaned == cleaned[::-1]\n\n# Example usage:\nprint(is_palindrome(\"A man, a plan, a canal: Panama\"))  # True\nprint(is_palindrome(\"racecar\"))                        # True\nprint(is_palindrome(\"hello\"))                          # False\n```\n\n### Explanation:\n1. **Cleaning the String**: \n   - The function first removes all non-alphanumeric characters (like punctuation and spaces) using `isalnum()`.\n   - It also converts the string to lowercase to ensure the check is case-insensitive.\n\n2. **Checking for Palindrome**:\n   - The cleaned string is compared with its reverse (`cleaned[::-1]`). \n   - If they are the same, the function returns `True`; otherwise, it returns `False`.\n\nThis handles typical palindrome cases, including phrases with punctuation and mixed cases."
+          }
+        ],
+        "type": "message",
+        "stop_reason": "end_turn",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 16,
+          "output_tokens": 242,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0
+        }
+      }
+    }
+  }
+]

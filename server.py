@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 import re
 from datetime import datetime
 import sys
+import argparse
 
 # Load environment variables from .env file
 load_dotenv()
@@ -83,11 +84,25 @@ app = FastAPI()
 
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # Get model mapping configuration from environment
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4o")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4o-mini")
+# deepseek-chat is recommended for all tasks including coding
+BIG_MODEL = os.environ.get("BIG_MODEL", "deepseek-chat")
+SMALL_MODEL = os.environ.get("SMALL_MODEL", "gemini-2.0-flash")  # Default to Gemini Flash for Haiku
+
+# Parse command-line arguments
+parser = argparse.ArgumentParser(description="Anthropic Proxy Server for Deepseek and Gemini")
+parser.add_argument('--always-cot', action='store_true', help='Always add Chain-of-Thought system prompt for Sonnet models')
+args, _ = parser.parse_known_args()
+ALWAYS_COT = args.always_cot
+
+if ALWAYS_COT:
+    logger.warning("🧠 ALWAYS_COT mode activated: Chain-of-Thought will be added to all Sonnet model requests")
+
+# Chain of Thought system prompt for reasoning (used only when Sonnet models are mapped to Deepseek)
+COT_SYSTEM_PROMPT = "You are a helpful assistant that uses chain-of-thought reasoning. For complex questions, always break down your reasoning step-by-step before giving an answer."
 
 # Models for Anthropic API requests
 class ContentBlockText(BaseModel):
@@ -122,9 +137,6 @@ class Tool(BaseModel):
     description: Optional[str] = None
     input_schema: Dict[str, Any]
 
-class ThinkingConfig(BaseModel):
-    enabled: bool
-
 class MessagesRequest(BaseModel):
     model: str
     max_tokens: int
@@ -138,35 +150,85 @@ class MessagesRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     tools: Optional[List[Tool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
-    thinking: Optional[ThinkingConfig] = None
+    thinking: Optional[Dict[str, Any]] = Field(default=None)
     original_model: Optional[str] = None  # Will store the original model name
+    
+    model_config = {
+        "extra": "allow"  # Allow extra fields for forward compatibility
+    }
     
     @field_validator('model')
     def validate_model(cls, v, info):
         # Store the original model name
         original_model = v
         
-        # Check if we're using OpenAI models and need to swap
+        # Check if we're using Deepseek/Gemini models and need to swap
         if USE_OPENAI_MODELS:
             # Remove anthropic/ prefix if it exists
             if v.startswith('anthropic/'):
                 v = v[10:]  # Remove 'anthropic/' prefix
             
-            # Swap Haiku with small model (default: gpt-4o-mini)
+            # Swap Haiku with Gemini Flash model
             if 'haiku' in v.lower():
-                new_model = f"openai/{SMALL_MODEL}"
+                # Use Gemini model for Haiku requests
+                new_model = f"gemini/{SMALL_MODEL}"
                 logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
                 v = new_model
             
-            # Swap any Sonnet model with big model (default: gpt-4o)
+            # Handle Sonnet models
             elif 'sonnet' in v.lower():
-                new_model = f"openai/{BIG_MODEL}"
-                logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
+                # Map Sonnet to the configured big model
+                new_model = f"deepseek/{BIG_MODEL}"
                 v = new_model
+                
+                # Check if thinking is enabled to decide whether to add CoT
+                values = info.data
+                if isinstance(values, dict):
+                    # Check if ALWAYS_COT flag is set
+                    if ALWAYS_COT:
+                        thinking_enabled = True
+                        logger.debug(f"📌 ALWAYS_COT enabled: Adding CoT system prompt for Sonnet model")
+                    else:
+                        # Check for thinking parameter
+                        thinking_enabled = False
+                        thinking_data = values.get("thinking")
+                        
+                        # Handle all possible thinking formats
+                        if thinking_data is not None:
+                            # Boolean value
+                            if isinstance(thinking_data, bool):
+                                thinking_enabled = thinking_data
+                            # Dict with enabled key
+                            elif isinstance(thinking_data, dict) and 'enabled' in thinking_data:
+                                thinking_enabled = bool(thinking_data['enabled'])
+                            # Empty dict - treat as enabled=True
+                            elif isinstance(thinking_data, dict):
+                                thinking_enabled = True
+                            # Any other value - presence means enabled
+                            else:
+                                thinking_enabled = True
+                    
+                    if thinking_enabled:
+                        # Add Chain-of-Thought system prompt when thinking is enabled
+                        logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model} with CoT (thinking enabled)")
+                        
+                        # If system prompt already exists, prepend CoT to it
+                        if values.get("system"):
+                            if isinstance(values["system"], str):
+                                values["system"] = f"{COT_SYSTEM_PROMPT}\n\n{values['system']}"
+                            # If it's a list, add CoT to the beginning
+                            elif isinstance(values["system"], list):
+                                values["system"].insert(0, {"type": "text", "text": COT_SYSTEM_PROMPT})
+                        else:
+                            # No system prompt exists, add the CoT system prompt
+                            values["system"] = COT_SYSTEM_PROMPT
+                    else:
+                        # No CoT for normal mode
+                        logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model} (normal mode)")
             
-            # Keep the model as is but add openai/ prefix if not already present
-            elif not v.startswith('openai/'):
-                new_model = f"openai/{v}"
+            # Keep the model as is but add deepseek/ prefix if not already present
+            elif not v.startswith('deepseek/'):
+                new_model = f"deepseek/{v}"
                 logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
                 v = new_model
                 
@@ -197,9 +259,13 @@ class TokenCountRequest(BaseModel):
     messages: List[Message]
     system: Optional[Union[str, List[SystemContent]]] = None
     tools: Optional[List[Tool]] = None
-    thinking: Optional[ThinkingConfig] = None
+    thinking: Optional[Dict[str, Any]] = Field(default=None)
     tool_choice: Optional[Dict[str, Any]] = None
     original_model: Optional[str] = None  # Will store the original model name
+    
+    model_config = {
+        "extra": "allow"  # Allow extra fields for forward compatibility
+    }
     
     @field_validator('model')
     def validate_model(cls, v, info):
@@ -212,21 +278,67 @@ class TokenCountRequest(BaseModel):
             if v.startswith('anthropic/'):
                 v = v[10:]  
             
-            # Swap Haiku with small model (default: gpt-4o-mini)
+            # Swap Haiku with Gemini Flash model
             if 'haiku' in v.lower():
-                new_model = f"openai/{SMALL_MODEL}"
+                # Use Gemini model for Haiku requests
+                new_model = f"gemini/{SMALL_MODEL}"
                 logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
                 v = new_model
             
-            # Swap any Sonnet model with big model (default: gpt-4o)
+            # Handle Sonnet models
             elif 'sonnet' in v.lower():
-                new_model = f"openai/{BIG_MODEL}"
-                logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
+                # Map Sonnet to the configured big model
+                new_model = f"deepseek/{BIG_MODEL}"
                 v = new_model
+                
+                # Check if thinking is enabled to decide whether to add CoT
+                values = info.data
+                if isinstance(values, dict):
+                    # Check if ALWAYS_COT flag is set
+                    if ALWAYS_COT:
+                        thinking_enabled = True
+                        logger.debug(f"📌 ALWAYS_COT enabled: Adding CoT system prompt for Sonnet model")
+                    else:
+                        # Check for thinking parameter
+                        thinking_enabled = False
+                        thinking_data = values.get("thinking")
+                        
+                        # Handle all possible thinking formats
+                        if thinking_data is not None:
+                            # Boolean value
+                            if isinstance(thinking_data, bool):
+                                thinking_enabled = thinking_data
+                            # Dict with enabled key
+                            elif isinstance(thinking_data, dict) and 'enabled' in thinking_data:
+                                thinking_enabled = bool(thinking_data['enabled'])
+                            # Empty dict - treat as enabled=True
+                            elif isinstance(thinking_data, dict):
+                                thinking_enabled = True
+                            # Any other value - presence means enabled
+                            else:
+                                thinking_enabled = True
+                    
+                    if thinking_enabled:
+                        # Add Chain-of-Thought system prompt when thinking is enabled
+                        logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model} with CoT (thinking enabled)")
+                        
+                        # If system prompt already exists, prepend CoT to it
+                        if values.get("system"):
+                            if isinstance(values["system"], str):
+                                values["system"] = f"{COT_SYSTEM_PROMPT}\n\n{values['system']}"
+                            # If it's a list, add CoT to the beginning
+                            elif isinstance(values["system"], list):
+                                values["system"].insert(0, {"type": "text", "text": COT_SYSTEM_PROMPT})
+                        else:
+                            # No system prompt exists, add the CoT system prompt
+                            values["system"] = COT_SYSTEM_PROMPT
+                    else:
+                        # No CoT for normal mode
+                        logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model} (normal mode)")
             
-            # Keep the model as is but add openai/ prefix if not already present
-            elif not v.startswith('openai/'):
-                new_model = f"openai/{v}"
+            # Keep the model as is but add deepseek/ prefix if not already present
+            elif not v.startswith('deepseek/'):
+                new_model = f"deepseek/{v}"
                 logger.debug(f"📌 MODEL MAPPING: {original_model} ➡️ {new_model}")
                 v = new_model
             
@@ -461,20 +573,38 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
                 
                 messages.append({"role": msg.role, "content": processed_content})
     
-    # Cap max_tokens for OpenAI models to their limit of 16384
+    # Cap max_tokens for Deepseek and Gemini models to their limit of 8192
     max_tokens = anthropic_request.max_tokens
-    if anthropic_request.model.startswith("openai/") or USE_OPENAI_MODELS:
-        max_tokens = min(max_tokens, 16384)
-        logger.debug(f"Capping max_tokens to 16384 for OpenAI model (original value: {anthropic_request.max_tokens})")
+    if anthropic_request.model.startswith("deepseek/") or anthropic_request.model.startswith("gemini/") or USE_OPENAI_MODELS:
+        max_tokens = min(max_tokens, 8192)
+        logger.debug(f"Capping max_tokens to 8192 for {anthropic_request.model} (original value: {anthropic_request.max_tokens})")
     
     # Create LiteLLM request dict
     litellm_request = {
-        "model": anthropic_request.model,  # t understands "anthropic/claude-x" format
+        "model": anthropic_request.model,  # it understands "anthropic/claude-x" format
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": anthropic_request.temperature,
         "stream": anthropic_request.stream,
     }
+    
+    # Add thinking parameter if present (newer Claude API feature)
+    if anthropic_request.thinking:
+        # For OpenAI-compatible APIs like Deepseek, we include this in metadata
+        # Since they don't directly support the thinking parameter
+        if not "metadata" in litellm_request:
+            litellm_request["metadata"] = {}
+            
+        # Handle different formats of the thinking parameter
+        if isinstance(anthropic_request.thinking, dict) and "enabled" in anthropic_request.thinking:
+            litellm_request["metadata"]["thinking"] = {
+                "enabled": bool(anthropic_request.thinking["enabled"])
+            }
+        else:
+            # Default to enabled=True if thinking is present but format is unexpected
+            litellm_request["metadata"]["thinking"] = {
+                "enabled": True
+            }
     
     # Add optional parameters if present
     if anthropic_request.stop_sequences:
@@ -491,7 +621,10 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         openai_tools = []
         for tool in anthropic_request.tools:
             # Convert to dict if it's a pydantic model
-            if hasattr(tool, 'dict'):
+            if hasattr(tool, 'model_dump'):
+                tool_dict = tool.model_dump()
+            elif hasattr(tool, 'dict'):
+                # For backward compatibility with older Pydantic
                 tool_dict = tool.dict()
             else:
                 tool_dict = tool
@@ -511,7 +644,10 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     
     # Convert tool_choice to OpenAI format if present
     if anthropic_request.tool_choice:
-        if hasattr(anthropic_request.tool_choice, 'dict'):
+        if hasattr(anthropic_request.tool_choice, 'model_dump'):
+            tool_choice_dict = anthropic_request.tool_choice.model_dump()
+        elif hasattr(anthropic_request.tool_choice, 'dict'):
+            # For backward compatibility with older Pydantic
             tool_choice_dict = anthropic_request.tool_choice.dict()
         else:
             tool_choice_dict = anthropic_request.tool_choice
@@ -543,8 +679,10 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         clean_model = original_request.model
         if clean_model.startswith("anthropic/"):
             clean_model = clean_model[len("anthropic/"):]
-        elif clean_model.startswith("openai/"):
-            clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("deepseek/"):
+            clean_model = clean_model[len("deepseek/"):]
+        elif clean_model.startswith("gemini/"):
+            clean_model = clean_model[len("gemini/"):]
         
         # Check if this is a Claude model (which supports content blocks)
         is_claude_model = clean_model.startswith("claude-")
@@ -1012,8 +1150,10 @@ async def create_message(
         clean_model = request.model
         if clean_model.startswith("anthropic/"):
             clean_model = clean_model[len("anthropic/"):]
-        elif clean_model.startswith("openai/"):
-            clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("deepseek/"):
+            clean_model = clean_model[len("deepseek/"):]
+        elif clean_model.startswith("gemini/"):
+            clean_model = clean_model[len("gemini/"):]
         
         logger.debug(f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}")
         
@@ -1021,18 +1161,21 @@ async def create_message(
         litellm_request = convert_anthropic_to_litellm(request)
         
         # Determine which API key to use based on the model
-        if request.model.startswith("openai/"):
-            litellm_request["api_key"] = OPENAI_API_KEY
-            logger.debug(f"Using OpenAI API key for model: {request.model}")
+        if request.model.startswith("deepseek/"):
+            litellm_request["api_key"] = DEEPSEEK_API_KEY
+            logger.debug(f"Using Deepseek API key for model: {request.model}")
+        elif request.model.startswith("gemini/"):
+            litellm_request["api_key"] = GEMINI_API_KEY
+            logger.debug(f"Using Gemini API key for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
-        # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
-            logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
+        # For Deepseek or Gemini models - modify request format to work with limitations
+        if ("deepseek" in litellm_request["model"] or "gemini" in litellm_request["model"]) and "messages" in litellm_request:
+            logger.debug(f"Processing {litellm_request['model']} model request")
             
-            # For OpenAI models, we need to convert content blocks to simple strings
+            # For Deepseek models, we need to convert content blocks to simple strings
             # and handle other requirements
             for i, msg in enumerate(litellm_request["messages"]):
                 # Special case - handle message content directly when it's a list of tool_result
@@ -1224,25 +1367,57 @@ async def create_message(
         }
         
         # Check for LiteLLM-specific attributes
-        for attr in ['message', 'status_code', 'response', 'llm_provider', 'model']:
+        for attr in ['message', 'status_code', 'llm_provider', 'model']:
             if hasattr(e, attr):
                 error_details[attr] = getattr(e, attr)
+        
+        # Handle 'response' attribute specially since it might not be JSON serializable
+        if hasattr(e, 'response'):
+            try:
+                # Check if it's a response object
+                if hasattr(e.response, 'status_code') and hasattr(e.response, 'text'):
+                    # It's likely a httpx.Response object
+                    error_details['response'] = {
+                        'status_code': getattr(e.response, 'status_code', None),
+                        'text': str(getattr(e.response, 'text', ''))
+                    }
+                else:
+                    # Try to convert to string
+                    error_details['response'] = str(e.response)
+            except:
+                # If all else fails, just note that there was a response
+                error_details['response'] = "Response object (not serializable)"
         
         # Check for additional exception details in dictionaries
         if hasattr(e, '__dict__'):
             for key, value in e.__dict__.items():
-                if key not in error_details and key not in ['args', '__traceback__']:
-                    error_details[key] = str(value)
+                if key not in error_details and key not in ['args', '__traceback__', 'response']:
+                    try:
+                        # Try to convert to string to avoid serialization issues
+                        error_details[key] = str(value)
+                    except:
+                        error_details[key] = f"<non-serializable {type(value).__name__}>"
         
         # Log all error details
-        logger.error(f"Error processing request: {json.dumps(error_details, indent=2)}")
+        try:
+            logger.error(f"Error processing request: {json.dumps(error_details, indent=2)}")
+        except TypeError:
+            # Fallback if JSON serialization fails
+            logger.error(f"Error processing request: {error_details['type']}: {error_details['error']}")
+            logger.error(f"Full traceback: {error_traceback}")
         
         # Format error for response
         error_message = f"Error: {str(e)}"
-        if 'message' in error_details and error_details['message']:
-            error_message += f"\nMessage: {error_details['message']}"
-        if 'response' in error_details and error_details['response']:
-            error_message += f"\nResponse: {error_details['response']}"
+        if hasattr(e, 'message') and getattr(e, 'message'):
+            error_message += f"\nMessage: {getattr(e, 'message')}"
+        if hasattr(e, 'response'):
+            try:
+                if hasattr(e.response, 'text'):
+                    error_message += f"\nResponse: {getattr(e.response, 'text', '')}"
+                else:
+                    error_message += f"\nResponse: {str(e.response)}"
+            except:
+                error_message += "\nResponse: <non-serializable response object>"
         
         # Return detailed error
         status_code = error_details.get('status_code', 500)
@@ -1266,9 +1441,11 @@ async def count_tokens(
         clean_model = request.model
         if clean_model.startswith("anthropic/"):
             clean_model = clean_model[len("anthropic/"):]
-        elif clean_model.startswith("openai/"):
-            clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("deepseek/"):
+            clean_model = clean_model[len("deepseek/"):]
         
+        elif clean_model.startswith("gemini/"):
+            clean_model = clean_model[len("gemini/"):]
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(
             MessagesRequest(
@@ -1322,7 +1499,7 @@ async def count_tokens(
 
 @app.get("/")
 async def root():
-    return {"message": "Anthropic Proxy for LiteLLM"}
+    return {"message": "Anthropic Proxy for Deepseek and Gemini using LiteLLM"}
 
 # Define ANSI color codes for terminal output
 class Colors:
@@ -1336,8 +1513,8 @@ class Colors:
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
     DIM = "\033[2m"
-def log_request_beautifully(method, path, claude_model, openai_model, num_messages, num_tools, status_code):
-    """Log requests in a beautiful, twitter-friendly format showing Claude to OpenAI mapping."""
+def log_request_beautifully(method, path, claude_model, deepseek_model, num_messages, num_tools, status_code):
+    """Log requests in a beautiful, twitter-friendly format showing Claude to Deepseek mapping."""
     # Format the Claude model name nicely
     claude_display = f"{Colors.CYAN}{claude_model}{Colors.RESET}"
     
@@ -1346,11 +1523,16 @@ def log_request_beautifully(method, path, claude_model, openai_model, num_messag
     if "?" in endpoint:
         endpoint = endpoint.split("?")[0]
     
-    # Extract just the OpenAI model name without provider prefix
-    openai_display = openai_model
-    if "/" in openai_display:
-        openai_display = openai_display.split("/")[-1]
-    openai_display = f"{Colors.GREEN}{openai_display}{Colors.RESET}"
+    # Extract just the target model name without provider prefix
+    target_display = deepseek_model
+    if "/" in target_display:
+        target_display = target_display.split("/")[-1]
+    
+    # Color based on provider
+    if "gemini" in target_display:
+        target_display = f"{Colors.YELLOW}{target_display}{Colors.RESET}"
+    else:
+        target_display = f"{Colors.GREEN}{target_display}{Colors.RESET}"
     
     # Format tools and messages
     tools_str = f"{Colors.MAGENTA}{num_tools} tools{Colors.RESET}"
@@ -1362,7 +1544,7 @@ def log_request_beautifully(method, path, claude_model, openai_model, num_messag
 
     # Put it all together in a clear, beautiful format
     log_line = f"{Colors.BOLD}{method} {endpoint}{Colors.RESET} {status_str}"
-    model_line = f"{claude_display} → {openai_display} {tools_str} {messages_str}"
+    model_line = f"{claude_display} → {target_display} {tools_str} {messages_str}"
     
     # Print to console
     print(log_line)
@@ -1373,6 +1555,8 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--help":
         print("Run with: uvicorn server:app --reload --host 0.0.0.0 --port 8082")
+        print("Optional arguments:")
+        print("  --always-cot    Always add Chain-of-Thought system prompt for Sonnet models")
         sys.exit(0)
     
     # Configure uvicorn to run with minimal logs

@@ -1,0 +1,301 @@
+{
+  "summary": {
+    "total_tests": 24,
+    "passed_tests": 12,
+    "success_rate": 50.0,
+    "duration_seconds": 107.99,
+    "average_response_times": {},
+    "comparison": {}
+  },
+  "results": [
+    {
+      "test_name": "simple_text",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.21,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.11,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.11,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.71,
+      "token_count": {
+        "input": 17,
+        "output": 58
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.67,
+      "token_count": {
+        "input": 17,
+        "output": 60
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "simple_text",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.81,
+      "token_count": {
+        "input": 17,
+        "output": 76
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.39,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.12,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.44,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.58,
+      "token_count": {
+        "input": 28,
+        "output": 15
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.64,
+      "token_count": {
+        "input": 28,
+        "output": 15
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "tool_usage",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 0.6,
+      "token_count": {
+        "input": 28,
+        "output": 15
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.13,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.14,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.11,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 15.75,
+      "token_count": {
+        "input": 44,
+        "output": 257
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 15.92,
+      "token_count": {
+        "input": 44,
+        "output": 259
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "complex_reasoning",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 14.88,
+      "token_count": {
+        "input": 44,
+        "output": 241
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.11,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.36,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "anthropic",
+      "status": "FAIL",
+      "response_time_seconds": 0.15,
+      "token_count": {
+        "input": 0,
+        "output": 0
+      },
+      "error": "HTTP 400: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"description: Extra inputs are not permitted\"}}",
+      "http_status": 400
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 18.59,
+      "token_count": {
+        "input": 16,
+        "output": 335
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 15.67,
+      "token_count": {
+        "input": 16,
+        "output": 253
+      },
+      "error": null,
+      "http_status": 200
+    },
+    {
+      "test_name": "code_generation",
+      "api_type": "proxy",
+      "status": "PASS",
+      "response_time_seconds": 20.8,
+      "token_count": {
+        "input": 16,
+        "output": 327
+      },
+      "error": null,
+      "http_status": 200
+    }
+  ],
+  "timestamp": "2025-03-26T02:01:36.794713"
+}

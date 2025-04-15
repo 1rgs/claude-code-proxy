@@ -13,3 +13,5 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.scripts]
+claude-code-proxy = "server:main"

@@ -109,7 +109,7 @@ OPENAI_MODELS = [
 # List of Gemini models
 GEMINI_MODELS = [
     "gemini-2.5-pro-preview-03-25",
-    "gemini-2.0-flash"
+    "gemini-2.5-flash-preview-04-17"
 ]
 
 # Helper function to clean schema for Gemini
@@ -1321,7 +1321,23 @@ async def create_message(
                     error_details[key] = str(value)
         
         # Log all error details
-        logger.error(f"Error processing request: {json.dumps(error_details, indent=2)}")
+        # logger.error(f"Error processing request: {json.dumps(error_details, indent=2)}")
+        if isinstance(error_details, dict):
+            # Filter out non-serializable objects or convert them to strings
+            serializable_details = {}
+            for key, value in error_details.items():
+                try:
+                    # Try to see if it's JSON serializable
+                    json.dumps({key: value})
+                    serializable_details[key] = value
+                except TypeError:
+                    # If not, convert to string representation
+                    serializable_details[key] = f"<{type(value).__name__}>: {str(value)}"
+
+            logger.error(f"Error processing request: {json.dumps(serializable_details, indent=2)}")
+        else:
+            # If it's not a dict, just log it as a string
+            logger.error(f"Error processing request: {str(error_details)}")
         
         # Format error for response
         error_message = f"Error: {str(e)}"

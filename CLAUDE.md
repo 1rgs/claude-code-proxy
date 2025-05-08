@@ -50,16 +50,7 @@ This project uses Python 3.10+ and manages dependencies with `uv`. Key dependenc
 
 ## Configuration
 
-The server uses environment variables for configuration:
-
-1. Copy `.env.example` to `.env`
-2. Configure the following variables:
-   - `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models
-   - `OPENAI_API_KEY`: Required if using OpenAI as provider or as fallback
-   - `GEMINI_API_KEY`: Required if using Google as provider
-   - `PREFERRED_PROVIDER`: Set to `openai` (default) or `google`
-   - `BIG_MODEL`: The model to map `sonnet` requests to
-   - `SMALL_MODEL`: The model to map `haiku` requests to
+For detailed configuration instructions, including environment variables and model settings, please refer to the "Setup" and "Model Mapping" sections in [README.md](README.md).
 
 ## Architecture
 
@@ -75,16 +66,6 @@ Key components:
 
 - `server.py`: Main FastAPI application with all proxy logic
 - `tests.py`: Test suite for verifying proxy functionality
-
-### Model Mapping
-
-The proxy automatically maps Claude models to either OpenAI or Gemini models:
-
-- `haiku` → `SMALL_MODEL` with appropriate provider prefix
-- `sonnet` → `BIG_MODEL` with appropriate provider prefix
-
-The mapping logic is controlled by environment variables (see Configuration).
-
 ## Development Patterns
 
 When working on this project, follow these guidelines:

@@ -857,7 +857,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         # Process each chunk
         async for chunk in response_generator:
             try:
-
+                # Skip empty chunks or chunks with only opening braces (incomplete JSON)
+                if isinstance(chunk, str) and (chunk.strip() == "" or chunk.strip() == "{"):
+                    logger.debug(f"Skipping incomplete JSON chunk: '{chunk}'")
+                    continue
                 
                 # Check if this is the end of the response with usage data
                 if hasattr(chunk, 'usage') and chunk.usage is not None:
@@ -1035,6 +1038,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
             except Exception as e:
                 # Log error but continue processing other chunks
                 logger.error(f"Error processing chunk: {str(e)}")
+                if isinstance(chunk, str):
+                    logger.error(f"Problematic chunk content: '{chunk}'")
+                else:
+                    logger.error(f"Problematic chunk type: {type(chunk)}")
                 continue
         
         # If we didn't get a finish reason, close any open blocks

@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Environment
+.env
+.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Tests
+tests.py
+
+# Documentation
+README.md
+CLAUDE.md
+*.png
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo

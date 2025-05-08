@@ -17,6 +17,41 @@ A proxy server that lets you use Anthropic clients with Gemini or OpenAI models 
 
 ### Setup 🛠️
 
+You can set up the proxy server either manually or using the provided setup script.
+
+#### Option 1: Using Setup Script (Recommended)
+
+1. **Clone this repository**:
+   ```bash
+   git clone https://github.com/1rgs/claude-code-openai.git
+   cd claude-code-openai
+   ```
+
+2. **Run the setup script**:
+   ```bash
+   ./setup.sh
+   ```
+   
+   This script will:
+   - Check your Python version
+   - Install uv if not already installed
+   - Create and activate a virtual environment
+   - Install all dependencies
+   - Create a .env file if one doesn't exist
+
+3. **Update your API keys**:
+   Edit the `.env` file with your API keys.
+   
+   Note: The `.env.example` file must always be present in the project root directory.
+
+4. **Run the server**:
+   ```bash
+   source venv/bin/activate
+   python -m uvicorn server:app --host 0.0.0.0 --port 8082 --reload
+   ```
+
+#### Option 2: Manual Setup
+
 1. **Clone this repository**:
    ```bash
    git clone https://github.com/1rgs/claude-code-openai.git
@@ -152,6 +187,54 @@ This proxy works by:
 5. **Returning** the formatted response to the client ✅
 
 The proxy handles both streaming and non-streaming responses, maintaining compatibility with all Claude clients. 🌊
+
+## Docker Deployment 🐳
+
+You can run the proxy server using Docker for easier deployment:
+
+### Using Docker Compose
+
+1. **Configure Environment**:
+   ```bash
+   cp .env.example .env
+   ```
+   Edit `.env` with your API keys as described in the Setup section.
+
+2. **Build and Run**:
+   ```bash
+   docker compose up -d
+   ```
+
+3. **Connect**:
+   ```bash
+   ANTHROPIC_BASE_URL=http://localhost:8082 claude
+   ```
+
+### Manual Docker Build
+
+1. **Build the Docker image**:
+   ```bash
+   docker build -t claude-code-proxy .
+   ```
+
+2. **Run the container**:
+   ```bash
+   docker run -d \
+     -p 8082:8082 \
+     -e OPENAI_API_KEY="your-openai-key" \
+     -e PREFERRED_PROVIDER="openai" \
+     --name claude-code-proxy \
+     claude-code-proxy
+   ```
+
+   Alternatively, use environment variables from your .env file:
+   ```bash
+   docker run -d \
+     -p 8082:8082 \
+     --env-file .env \
+     --name claude-code-proxy \
+     claude-code-proxy
+   ```
 
 ## Contributing 🤝
 

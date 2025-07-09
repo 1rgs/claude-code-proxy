@@ -1,15 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"] # list of folders that contain the packages (["."] by default)
+
 [project]
 name = "anthropic-proxy"
 version = "0.1.0"
 description = "Proxy that translates between Anthropic API and LiteLLM"
+authors = [{ name = "Viet Vu", email = "vietvudanh@gmail.com" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.115.11",
-    "uvicorn>=0.34.0",
-    "httpx>=0.25.0",
-    "pydantic>=2.0.0",
-    "litellm>=1.40.14",
-    "python-dotenv>=1.0.0",
+    "fastapi[standard]",
+    "uvicorn",
+    "httpx",
+    "pydantic",
+    "litellm",
+    "loguru",
+    "python-dotenv",
 ]
-

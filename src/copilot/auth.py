@@ -68,7 +68,7 @@ class CopilotToken(BaseModel):
 
     @field_validator("expires_at", mode="before")
     @classmethod
-    def parse_expires_at(cls, v):
+    def parse_expires_at(cls, v) -> datetime:
         """Parse expires_at from timestamp or datetime."""
         if isinstance(v, int):
             return datetime.fromtimestamp(v, tz=timezone.utc)

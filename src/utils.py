@@ -1,8 +1,9 @@
+
 import json
 import logging
 import traceback
 import uuid
-from typing import Any, Dict, List, Union
+from typing import Any, AsyncGenerator, Dict, List, Union
 
 from models import MessagesRequest, MessagesResponse, Usage
 
@@ -580,7 +581,13 @@ def convert_litellm_to_anthropic(
         )
 
 
-async def handle_streaming(response_generator, original_request: MessagesRequest):
+from typing import AsyncGenerator
+
+
+async def handle_streaming(
+    response_generator,
+    original_request: MessagesRequest
+) -> AsyncGenerator[str, None]:
     """Handle streaming responses from LiteLLM and convert to Anthropic format."""
     try:
         # Send message_start event

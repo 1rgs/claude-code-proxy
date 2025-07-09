@@ -1,7 +1,7 @@
 import asyncio
 import os
 from pyexpat import model
-from typing import Any, List
+from typing import Any, AsyncGenerator, Dict, List
 from wsgiref import headers
 
 from loguru import logger
@@ -28,7 +28,7 @@ class CopilotBackend:
             api_key=copilot_token.token,
         )
 
-    def _clean_model_name(self, kwargs: dict) -> dict:
+    def _clean_model_name(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Clean the model name from kwargs.
         If the model is not provided, use the default big model.
@@ -38,7 +38,7 @@ class CopilotBackend:
             kwargs["model"] = model_name.split("/")[-1]
         return kwargs
 
-    def completion(self, **kwargs: Any) -> dict:
+    def completion(self, **kwargs: Any) -> Dict[str, Any]:
         """
         Function to call OpenAI API.
         """
@@ -46,7 +46,7 @@ class CopilotBackend:
         clean_kwargs = self._clean_model_name(kwargs)
         return self.client.chat.completions.create(**clean_kwargs)
 
-    async def acompletion(self, **kwargs: Any) -> dict:
+    async def acompletion(self, **kwargs: Any) -> AsyncGenerator[Any, None]:
         """
         Async generator to call OpenAI API and yield chunks as they arrive.
         """

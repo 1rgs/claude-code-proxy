@@ -1,10 +1,10 @@
+
 import logging
 import sys
 
 
-# Create a filter to block any log messages containing specific strings
 class MessageFilter(logging.Filter):
-    def filter(self, record):
+    def filter(self, record: logging.LogRecord) -> bool:
         # Block messages containing these strings
         blocked_phrases = [
             "LiteLLM completion()",
@@ -32,14 +32,14 @@ class ColorizedFormatter(logging.Formatter):
     RESET = "\033[0m"
     BOLD = "\033[1m"
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         if record.levelno == logging.DEBUG and "MODEL MAPPING" in record.msg:
             # Apply colors and formatting to model mapping logs
             return f"{self.BOLD}{self.GREEN}{record.msg}{self.RESET}"
         return super().format(record)
 
 
-def setup_logging():
+def setup_logging() -> None:
     # Configure logging
     logging.basicConfig(
         level=logging.WARN,  # Change to INFO level to show more details
@@ -80,8 +80,14 @@ class Colors:
 
 
 def log_request_beautifully(
-    method, path, claude_model, openai_model, num_messages, num_tools, status_code
-):
+    method: str,
+    path: str,
+    claude_model: str,
+    openai_model: str,
+    num_messages: int,
+    num_tools: int,
+    status_code: int,
+) -> None:
     """Log requests in a beautiful, twitter-friendly format showing Claude to OpenAI mapping."""
     # Format the Claude model name nicely
     claude_display = f"{Colors.CYAN}{claude_model}{Colors.RESET}"

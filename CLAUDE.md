@@ -90,7 +90,8 @@ Your code must be 100% clean. No exceptions.
 
 ### FORBIDDEN - NEVER DO THESE:
 - **NO** TODOs in final code
-
+- **NO** import in middle of the files
+- **NO** import *, always use implicit import
 > **AUTOMATED ENFORCEMENT**: The smart-lint hook will BLOCK commits that violate these rules.  
 > When you see `❌ FORBIDDEN PATTERN`, you MUST fix it immediately!
 
@@ -98,7 +99,8 @@ Your code must be 100% clean. No exceptions.
 - **Delete** old code when replacing it
 - **Meaningful names**: `user_id` not `id`
 - **Early returns** to reduce nesting
-- **using loguru.logger** to logging
+- **Using loguru.logger** to logging
+- **Always use datetime `from datetime import datetime`**
 
 ## Implementation Standards
 

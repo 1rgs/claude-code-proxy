@@ -337,7 +337,7 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
 
 def test_request(test_name, request_data, check_tools=False):
     """Run a test with the given request data."""
-    print(f"\n{'='*20} RUNNING TEST: {test_name} {'='*20}")
+    print(f"\n{'=' * 20} RUNNING TEST: {test_name} {'=' * 20}")
 
     # Log the request data
     print(
@@ -618,7 +618,7 @@ def compare_stream_stats(anthropic_stats, proxy_stats):
 
 async def test_streaming(test_name, request_data):
     """Run a streaming test with the given request data."""
-    print(f"\n{'='*20} RUNNING STREAMING TEST: {test_name} {'='*20}")
+    print(f"\n{'=' * 20} RUNNING STREAMING TEST: {test_name} {'=' * 20}")
 
     # Log the request data
     print(

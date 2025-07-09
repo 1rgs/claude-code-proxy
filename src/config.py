@@ -37,4 +37,4 @@ OPENAI_MODELS = [
 # List of Gemini models
 GEMINI_MODELS = ["gemini-2.5-pro-preview-03-25", "gemini-2.0-flash"]
 
-REQUEST_BACKEND = 'copilot' # or litellm
+REQUEST_BACKEND = "copilot"  # or litellm

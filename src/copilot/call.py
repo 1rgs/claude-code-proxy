@@ -1,20 +1,25 @@
 import asyncio
 import os
 from pyexpat import model
-from typing import List
+from typing import Any, List
 from wsgiref import headers
 
 from loguru import logger
 from openai import OpenAI
 
-from copilot.auth import CopilotToken, fetch_copilot_token, get_base_headers, get_oauth_token
+from copilot.auth import (
+    CopilotToken,
+    fetch_copilot_token,
+    get_base_headers,
+    get_oauth_token,
+)
 from copilot.utils import convert_openai_to_anthropic_request
 
 
 class CopilotBackend:
     copilot_token: CopilotToken = None
 
-    def __init__(self, copilot_token: str = None):
+    def __init__(self, copilot_token: CopilotToken):
         """Initialize the CopilotBackend with an optional token."""
         self.copilot_token = copilot_token
         self.client = OpenAI(
@@ -23,26 +28,25 @@ class CopilotBackend:
             api_key=copilot_token.token,
         )
 
-    def _clean_model_name(self, kwargs: dict) -> str:
+    def _clean_model_name(self, kwargs: dict) -> dict:
         """
         Clean the model name from kwargs.
         If the model is not provided, use the default big model.
         """
         model_name = kwargs.get("model")
-        if '/' in model_name:
-            kwargs['model'] = model_name.split('/')[-1]
+        if "/" in model_name:
+            kwargs["model"] = model_name.split("/")[-1]
         return kwargs
 
-
-    def completion(self, **kwargs):
+    def completion(self, **kwargs: Any) -> dict:
         """
         Function to call OpenAI API.
         """
         # logger.debug(f"Calling OpenAI API with kwargs: {kwargs}")
         clean_kwargs = self._clean_model_name(kwargs)
         return self.client.chat.completions.create(**clean_kwargs)
-    
-    async def acompletion(self, **kwargs):
+
+    async def acompletion(self, **kwargs: Any) -> dict:
         """
         Async generator to call OpenAI API and yield chunks as they arrive.
         """

@@ -1,77 +1,165 @@
-# CLAUDE.md
+# Development Partnership
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+We're building production-quality code together. Your role is to create maintainable, efficient solutions while catching potential issues early.
 
-## Repository Overview
+When you seem stuck or overly complex, I'll redirect you - my guidance helps you stay on track.
 
-This repository contains an Anthropic API Proxy for Gemini and OpenAI Models. It enables Anthropic clients, such as Claude Code, to interface with Gemini or OpenAI models via LiteLLM, configuring the desired model backend through environment variables.
+## 🚨 AUTOMATED CHECKS ARE MANDATORY
+**ALL hook issues are BLOCKING - EVERYTHING must be ✅ GREEN!**  
+No errors. No formatting issues. No linting problems. Zero tolerance.  
+These are not suggestions. Fix ALL issues before continuing.
 
-## Key Commands
+## CRITICAL WORKFLOW - ALWAYS FOLLOW THIS!
 
-### 1. Setting Up the Project
-- Clone the repository:
-  ```bash
-  git clone https://github.com/1rgs/claude-code-openai.git
-  cd claude-code-openai
-  ```
-- Install `uv` (if not already installed):
-  ```bash
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  ```
+### Research → Plan → Implement
+**NEVER JUMP STRAIGHT TO CODING!** Always follow this sequence:
+1. **Research**: Explore the codebase, understand existing patterns
+2. **Plan**: Create a detailed implementation plan and verify it with me  
+3. **Implement**: Execute the plan with validation checkpoints
 
-### 2. Configuring Environment Variables
-1. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-2. Edit `.env` to set API keys and configuration variables for models:
-   - `OPENAI_API_KEY`, `GEMINI_API_KEY`, and optionally `ANTHROPIC_API_KEY`
-   - `PREFERRED_PROVIDER` (default: `openai`)
-   - `BIG_MODEL` and `SMALL_MODEL`
+When asked to implement any feature, you'll first say: "Let me research the codebase and create a plan before implementing."
 
-### 3. Running the Server
-- Start the proxy:
-  ```bash
-  uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
-  ```
+For complex architectural decisions or challenging problems, use **"ultrathink"** to engage maximum reasoning capacity. Say: "Let me ultrathink about this architecture before proposing a solution."
 
-### 4. Using with Claude Code
-- Start Claude Code with the proxy:
-  ```bash
-  ANTHROPIC_BASE_URL=http://localhost:8082 claude
-  ```
+### USE MULTIPLE AGENTS!
+*Leverage subagents aggressively* for better results:
 
-## High-Level Architecture
+* Spawn agents to explore different parts of the codebase in parallel
+* Use one agent to write tests while another implements features
+* Delegate research tasks: "I'll have an agent investigate the database schema while I analyze the API structure"
+* For complex refactors: One agent identifies changes, another implements them
 
-### 1. Project Structure
-- **`src/`**: Contains main application code and modules:
-  - `config.py`: Configurations for environment variables and model mapping.
-  - `server.py`: Entry point for the proxy server with endpoints.
-  - `copilot/`: Includes utility functions and authentication.
-- **`tests.py`**: Contains test cases for core functionalities.
-- **`pyproject.toml`**: Defines project dependencies and configurations.
+Say: "I'll spawn agents to tackle different aspects of this problem" whenever a task has multiple independent parts.
 
-### 2. Proxy Functionality
-The proxy translates Anthropic API requests into formats compatible with OpenAI or Gemini SDKs:
-1. Receives HTTP requests in Anthropic's API format.
-2. Maps and prefixes model names based on configured backend (`openai/` or `gemini/`).
-3. Forwards requests to the selected SDK (via LiteLLM).
-4. Converts the response back into Anthropic's API format for the client.
+### Reality Checkpoints
+**Stop and validate** at these moments:
+- After implementing a complete feature
+- Before starting a new major component  
+- When something feels wrong
+- Before declaring "done"
+- **WHEN HOOKS FAIL WITH ERRORS** ❌
 
-### 3. Model Mapping
-- **Default Behavior**:
-  - `haiku` maps to `SMALL_MODEL`.
-  - `sonnet` maps to `BIG_MODEL`.
-- **Environment Variables** (in `.env`):
-  - If `PREFERRED_PROVIDER=openai`, maps to OpenAI by default.
-  - If `PREFERRED_PROVIDER=google`, uses Gemini models if available, with OpenAI fallback.
+Run: `make fmt && make test && make lint`
 
-### Known Files
-- `README.md`: Contains project setup and usage instructions.
-- `.env.example`: Template for environment configuration.
+> Why: You can lose track of what's actually working. These checkpoints prevent cascading failures.
 
-### Testing
-- Test suite: Run all tests to ensure functionality.
-  ```bash
-  pytest tests.py
-  ```
+### 🚨 CRITICAL: Hook Failures Are BLOCKING
+**When hooks report ANY issues (exit code 2), you MUST:**
+1. **STOP IMMEDIATELY** - Do not continue with other tasks
+2. **FIX ALL ISSUES** - Address every ❌ issue until everything is ✅ GREEN
+3. **VERIFY THE FIX** - Re-run the failed command to confirm it's fixed
+4. **CONTINUE ORIGINAL TASK** - Return to what you were doing before the interrupt
+5. **NEVER IGNORE** - There are NO warnings, only requirements
+
+This includes:
+- Formatting issues (ruff format, etc.)
+- Linting violations (ruff check, eslint, etc.)
+- Forbidden patterns (pass)
+- ALL other checks
+
+Your code must be 100% clean. No exceptions.
+
+**Recovery Protocol:**
+- When interrupted by a hook failure, maintain awareness of your original task
+- After fixing all issues and verifying the fix, continue where you left off
+- Use the todo list to track both the fix and your original task
+
+## Working Memory Management
+
+### When context gets long:
+- Re-read this CLAUDE.md file
+- Summarize progress in a PROGRESS.md file
+- Document current state before major changes
+
+### Maintain TODO.md:
+```
+## Current Task
+- [ ] What we're doing RIGHT NOW
+
+## Completed  
+- [x] What's actually done and tested
+
+## Next Steps
+- [ ] What comes next
+```
+
+## Python-Specific Rules
+
+### ALWAYS DO THESE
+- using type hints
+
+### FORBIDDEN - NEVER DO THESE:
+- **NO** TODOs in final code
+
+> **AUTOMATED ENFORCEMENT**: The smart-lint hook will BLOCK commits that violate these rules.  
+> When you see `❌ FORBIDDEN PATTERN`, you MUST fix it immediately!
+
+### Required Standards:
+- **Delete** old code when replacing it
+- **Meaningful names**: `user_id` not `id`
+- **Early returns** to reduce nesting
+- **using loguru.logger** to logging
+
+## Implementation Standards
+
+### Our code is complete when:
+- ? All linters pass with zero issues
+- ? All tests pass  
+- ? Feature works end-to-end
+- ? Old code is deleted
+- ? python docstring on all exported symbols
+
+### Testing Strategy
+- Complex business logic ? Write tests first
+- Simple CRUD ? Write tests after
+- Hot paths ? Add benchmarks
+- Skip tests for main() and simple CLI parsing
+
+### Project Structure
+```
+src/           # source codes
+pyproject.toml # Python package info & dependencies
+```
+
+## Problem-Solving Together
+
+When you're stuck or confused:
+1. **Stop** - Don't spiral into complex solutions
+2. **Delegate** - Consider spawning agents for parallel investigation
+3. **Ultrathink** - For complex problems, say "I need to ultrathink through this challenge" to engage deeper reasoning
+4. **Step back** - Re-read the requirements
+5. **Simplify** - The simple solution is usually correct
+6. **Ask** - "I see two approaches: [A] vs [B]. Which do you prefer?"
+
+My insights on better approaches are valued - please ask for them!
+
+## Performance & Security
+
+### **Measure First**:
+- No premature optimization
+- Benchmark before claiming something is faster
+- Use pprof for real bottlenecks
+
+### **Security Always**:
+- Validate all inputs
+
+## Communication Protocol
+
+### Progress Updates:
+```
+✓ Implemented authentication (all tests passing)
+✓ Added rate limiting  
+✗ Found issue with token expiration - investigating
+```
+
+### Suggesting Improvements:
+"The current approach works, but I notice [observation].
+Would you like me to [specific improvement]?"
+
+## Working Together
+
+- This is always a feature branch - no backwards compatibility needed
+- When in doubt, we choose clarity over cleverness
+- **REMINDER**: If this file hasn't been referenced in 30+ minutes, RE-READ IT!
+
+Avoid complex abstractions or "clever" code. The simple, obvious solution is probably better, and my guidance helps you stay focused on what matters.

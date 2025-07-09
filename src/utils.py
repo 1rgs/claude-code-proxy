@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 # Helper function to clean schema for Gemini
-def clean_gemini_schema(schema: Any) -> Any:
+def clean_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
     """Recursively removes unsupported fields from a JSON schema for Gemini."""
     if isinstance(schema, dict):
         # Remove specific keys unsupported by Gemini tool parameters
@@ -37,7 +37,9 @@ def clean_gemini_schema(schema: Any) -> Any:
     return schema
 
 
-def parse_tool_result_content(content):
+def parse_tool_result_content(
+    content: Union[str, List[Dict[str, Any]], Dict[str, Any]],
+) -> str:
     """Helper function to properly parse and normalize tool result content."""
     if content is None:
         return "No content provided"

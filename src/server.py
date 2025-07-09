@@ -5,10 +5,8 @@ import time
 from typing import Annotated
 
 import litellm
-from src.copilot.auth import fetch_copilot_token, get_oauth_token
-from src.copilot.call import CopilotBackend
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from config import ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, REQUEST_BACKEND
@@ -19,6 +17,8 @@ from models import (
     TokenCountRequest,
     TokenCountResponse,
 )
+from src.copilot.auth import fetch_copilot_token, get_oauth_token
+from src.copilot.call import CopilotBackend
 from utils import (
     convert_anthropic_to_litellm,
     convert_litellm_to_anthropic,
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
+
 async def copilot_backend():
     """
     Initialize the Copilot backend if needed.
@@ -42,7 +43,6 @@ async def copilot_backend():
         copilot_backend = CopilotBackend(copilot_token=copilot_token)
         return copilot_backend
     return None
-
 
 
 @app.middleware("http")
@@ -61,7 +61,11 @@ async def log_requests(request: Request, call_next):
 
 
 @app.post("/v1/messages", response_model=MessagesResponse)
-async def create_message(request: MessagesRequest, raw_request: Request, copilot_backend: Annotated[CopilotBackend, Depends(copilot_backend)]):
+async def create_message(
+    request: MessagesRequest,
+    raw_request: Request,
+    copilot_backend: Annotated[CopilotBackend, Depends(copilot_backend)],
+):
     try:
         # print the body here
         body = await raw_request.body()
@@ -310,14 +314,16 @@ async def create_message(request: MessagesRequest, raw_request: Request, copilot
             )
             # Ensure we use the async version for streaming
             if REQUEST_BACKEND == "copilot":
-                logger.debug('Using Copilot backend for completion')
+                logger.debug("Using Copilot backend for completion")
                 logger.debug(list(litellm_request.keys()))
                 clean_copilot_request = litellm_request.copy()
                 # Remove any keys that Copilot doesn't support
                 for key in ["api_key"]:
                     if key in clean_copilot_request:
                         del clean_copilot_request[key]
-                response_generator = copilot_backend.acompletion(**clean_copilot_request)
+                response_generator = copilot_backend.acompletion(
+                    **clean_copilot_request
+                )
             else:
                 response_generator = await litellm.acompletion(**litellm_request)
 
@@ -340,7 +346,7 @@ async def create_message(request: MessagesRequest, raw_request: Request, copilot
             )
             start_time = time.time()
             if REQUEST_BACKEND == "copilot":
-                logger.debug('Using Copilot backend for completion')
+                logger.debug("Using Copilot backend for completion")
                 logger.debug(list(litellm_request.keys()))
                 clean_copilot_request = litellm_request.copy()
                 # Remove any keys that Copilot doesn't support

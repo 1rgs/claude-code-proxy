@@ -33,7 +33,7 @@ PROXY_API_KEY = os.environ.get("ANTHROPIC_API_KEY")  # Using same key for proxy
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 PROXY_API_URL = "http://localhost:8082/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-MODEL = "claude-3-sonnet-20240229"  # Change to your preferred model
+MODEL = "claude-3-7-sonnet-20250219"  # Change to your preferred model
 
 # Headers
 anthropic_headers = {

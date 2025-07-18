@@ -82,6 +82,11 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Get custom base URLs from environment
+OPENAI_API_BASE_URL = os.environ.get("OPENAI_API_BASE_URL")
+ANTHROPIC_API_BASE_URL = os.environ.get("ANTHROPIC_API_BASE_URL")
+GEMINI_API_BASE_URL = os.environ.get("GEMINI_API_BASE_URL")
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
@@ -207,19 +212,19 @@ class MessagesRequest(BaseModel):
         mapped = False
         # Map Haiku to SMALL_MODEL based on provider preference
         if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
-            else:
+            else: # Default to openai
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
-            else:
+            else: # Default to openai
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
 
@@ -280,19 +285,19 @@ class TokenCountRequest(BaseModel):
         mapped = False
         # Map Haiku to SMALL_MODEL based on provider preference
         if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
-            else:
+            else: # Default to openai
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
         # Map Sonnet to BIG_MODEL based on provider preference
         elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google":
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
-            else:
+            else: # Default to openai
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
 
@@ -1103,16 +1108,23 @@ async def create_message(
         # Convert Anthropic request to LiteLLM format
         litellm_request = convert_anthropic_to_litellm(request)
         
-        # Determine which API key to use based on the model
+        # Determine which API key and base URL to use based on the model
         if request.model.startswith("openai/"):
             litellm_request["api_key"] = OPENAI_API_KEY
-            logger.debug(f"Using OpenAI API key for model: {request.model}")
+            litellm_request["base_url"] = OPENAI_API_BASE_URL
+            logger.debug(f"Using OpenAI provider for model: {request.model}")
         elif request.model.startswith("gemini/"):
             litellm_request["api_key"] = GEMINI_API_KEY
-            logger.debug(f"Using Gemini API key for model: {request.model}")
-        else:
+            litellm_request["base_url"] = GEMINI_API_BASE_URL
+            logger.debug(f"Using Gemini provider for model: {request.model}")
+        else: # Defaults to anthropic
             litellm_request["api_key"] = ANTHROPIC_API_KEY
-            logger.debug(f"Using Anthropic API key for model: {request.model}")
+            litellm_request["base_url"] = ANTHROPIC_API_BASE_URL
+            logger.debug(f"Using Anthropic provider for model: {request.model}")
+
+        # Remove base_url if it's None to avoid passing it to litellm
+        if litellm_request.get("base_url") is None:
+            litellm_request.pop("base_url", None)
         
         # For OpenAI models - modify request format to work with limitations
         if "openai" in litellm_request["model"] and "messages" in litellm_request:

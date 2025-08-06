@@ -81,6 +81,11 @@ app = FastAPI()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
+
+# Set OpenAI base URL in litellm if provided
+if os.environ.get("OPENAI_BASE_URL"):
+    litellm.api_base = os.environ.get("OPENAI_BASE_URL") 
 
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()

@@ -141,6 +141,18 @@ BIG_MODEL="gpt-4o" # Example specific model
 SMALL_MODEL="gpt-4o-mini" # Example specific model
 ```
 
+
+**Example 4: Use Azure OpenAI**
+```dotenv
+PREFERRED_PROVIDER="azure"
+BIG_MODEL="your-gpt4-deployment"
+SMALL_MODEL="your-gpt4-mini-deployment"
+
+# Azure OpenAI Configuration
+AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com"
+AZURE_OPENAI_API_KEY="your-azure-openai-api-key"
+AZURE_API_VERSION="2024-02-15-preview"
+```
 ## How It Works 🧩
 
 This proxy works by:

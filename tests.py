@@ -361,6 +361,83 @@ def test_request(test_name, request_data, check_tools=False):
         traceback.print_exc()
         return False
 
+def test_azure_model_mapping():
+    """Test Azure model mapping specifically."""
+    print(f"\n{'='*20} RUNNING AZURE MODEL MAPPING TEST {'='*20}")
+    
+    # Test different Azure configurations
+    azure_tests = [
+        {
+            "name": "direct_azure",
+            "model": "azure/my-deployment",
+            "expected_prefix": "azure/",
+            "env_vars": {}
+        }
+    ]
+    
+    success_count = 0
+    
+    for test_case in azure_tests:
+        print(f"\n--- Testing {test_case['name']} ---")
+        
+        # Create test request
+        test_data = {
+            "model": test_case["model"],
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "Test message"}]
+        }
+        
+        try:
+            # We'll just test that the proxy accepts the request and processes it
+            # without necessarily getting a real response (since we may not have Azure configured)
+            print(f"Testing model: {test_case['model']}")
+            
+            # Use dummy headers for Azure-only testing if no API key is set
+            test_headers = proxy_headers
+            if not ANTHROPIC_API_KEY:
+                test_headers = {
+                    "x-api-key": "dummy-key-for-azure-testing",
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "content-type": "application/json",
+                }
+            
+            proxy_response = httpx.post(PROXY_API_URL, headers=test_headers, json=test_data, timeout=10)
+            
+            print(f"Status code: {proxy_response.status_code}")
+            
+            # Accept both success and certain types of failures (like missing Azure config)
+            # The important thing is that the model mapping logic works
+            if proxy_response.status_code == 200:
+                print("✅ Request succeeded - Azure mapping worked")
+                success_count += 1
+            elif proxy_response.status_code in [400, 401, 403, 422, 500]:
+                response_text = proxy_response.text
+                print(f"❌ Azure test failed (HTTP {proxy_response.status_code})")
+                print(f"Response: {response_text}")
+                
+                # Check if it's a config issue and provide helpful message
+                if "azure" in response_text.lower() or "deployment" in response_text.lower():
+                    print("💡 This looks like an Azure configuration issue.")
+                elif proxy_response.status_code == 500:
+                    print("💡 HTTP 500 - This could be missing Azure config or incorrect deployment name.")
+                
+                print("💡 To fix Azure configuration, ensure you have these in your .env:")
+                print("   AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/")
+                print("   AZURE_OPENAI_API_KEY=your-azure-api-key")
+                print("   AZURE_API_VERSION=your-api-version")
+                print("   BIG_MODEL=your-deployment-name")
+                print("   SMALL_MODEL=your-deployment-name")
+                # Don't increment success_count - this is a failure
+            else:
+                print(f"❌ Unexpected status code: {proxy_response.status_code}")
+                print(f"Response: {proxy_response.text}")
+                
+        except Exception as e:
+            print(f"❌ Exception during test: {e}")
+    
+    print(f"\nAzure mapping tests: {success_count}/{len(azure_tests)} passed")
+    return success_count == len(azure_tests)
+
 # ================= STREAMING TESTS =================
 
 class StreamStats:
@@ -636,8 +713,18 @@ async def run_tests(args):
     # Track test results
     results = {}
     
-    # First run non-streaming tests
+    # Run Azure-specific tests first (unless we're doing streaming-only)
     if not args.streaming_only:
+        print("\n\n=========== RUNNING AZURE INTEGRATION TESTS ===========\n")
+        azure_result = test_azure_model_mapping()
+        results["azure_model_mapping"] = azure_result
+    
+    # If Azure-only is specified, skip other tests
+    if args.azure_only:
+        print("\n\n=========== AZURE-ONLY MODE - SKIPPING OTHER TESTS ===========\n")
+    
+    # First run non-streaming tests
+    elif not args.streaming_only:
         print("\n\n=========== RUNNING NON-STREAMING TESTS ===========\n")
         for test_name, test_data in TEST_SCENARIOS.items():
             # Skip streaming tests
@@ -658,7 +745,7 @@ async def run_tests(args):
             results[test_name] = result
     
     # Now run streaming tests
-    if not args.no_streaming:
+    if not args.no_streaming and not args.azure_only:
         print("\n\n=========== RUNNING STREAMING TESTS ===========\n")
         for test_name, test_data in TEST_SCENARIOS.items():
             # Only select streaming tests, or force streaming
@@ -695,18 +782,19 @@ async def run_tests(args):
         return False
 
 async def main():
-    # Check that API key is set
-    if not ANTHROPIC_API_KEY:
-        print("Error: ANTHROPIC_API_KEY not set in .env file")
-        return
-    
-    # Parse command-line arguments
+    # Parse command-line arguments first
     parser = argparse.ArgumentParser(description="Test the Claude-on-OpenAI proxy")
     parser.add_argument("--no-streaming", action="store_true", help="Skip streaming tests")
     parser.add_argument("--streaming-only", action="store_true", help="Only run streaming tests")
     parser.add_argument("--simple", action="store_true", help="Only run simple tests (no tools)")
     parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
+    parser.add_argument("--azure-only", action="store_true", help="Only run Azure integration tests")
     args = parser.parse_args()
+    
+    # Check that API key is set (unless we're only testing Azure)
+    if not ANTHROPIC_API_KEY and not args.azure_only:
+        print("Error: ANTHROPIC_API_KEY not set in .env file")
+        return
     
     # Run tests
     success = await run_tests(args)

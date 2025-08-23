@@ -15,12 +15,14 @@ import re
 from datetime import datetime
 import sys
 
+litellm._turn_on_debug()
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN,  # Change to INFO level to show more details
+    level=logging.INFO,  # Change to INFO level to show more details
     format='%(asctime)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
@@ -79,6 +81,7 @@ app = FastAPI()
 
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -113,6 +116,13 @@ OPENAI_MODELS = [
 GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro"
+]
+
+GITHUB_MODELS = [
+    "gpt-4.1-mini",
+    "gpt-4.1",
+    "gpt-4o",
+    "gpt-4o-mini",
 ]
 
 # Helper function to clean schema for Gemini
@@ -205,6 +215,10 @@ class MessagesRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('github/'):
+            clean_v = clean_v[7:]
+
+        logger.debug(f"📌 original_model: '{original_model}', clean_v: '{clean_v}'")
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -218,6 +232,9 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "github" and SMALL_MODEL in GITHUB_MODELS:
+                new_model = f"github/{SMALL_MODEL}"
+                mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
@@ -226,6 +243,9 @@ class MessagesRequest(BaseModel):
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "github" and BIG_MODEL in GITHUB_MODELS:
+                new_model = f"github/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -239,13 +259,16 @@ class MessagesRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in GITHUB_MODELS and not v.startswith('github/'):
+                new_model = f"github/{clean_v}"
+                mapped = True # Technically mapped to add prefix
         # --- Mapping Logic --- END ---
 
         if mapped:
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
              # If no mapping occurred and no prefix exists, log warning or decide default
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'github/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -283,6 +306,8 @@ class TokenCountRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('github/'):
+            clean_v = clean_v[7:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -290,6 +315,9 @@ class TokenCountRequest(BaseModel):
         if 'haiku' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "github" and SMALL_MODEL in GITHUB_MODELS:
+                new_model = f"github/{SMALL_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -299,6 +327,9 @@ class TokenCountRequest(BaseModel):
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "github" and BIG_MODEL in GITHUB_MODELS:
+                new_model = f"github/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -312,12 +343,15 @@ class TokenCountRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in GITHUB_MODELS and not v.startswith('github/'):
+                new_model = f"github/{clean_v}"
+                mapped = True # Technically mapped to add prefix
         # --- Mapping Logic --- END ---
 
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'github/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -541,7 +575,7 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     
     # Cap max_tokens for OpenAI models to their limit of 16384
     max_tokens = anthropic_request.max_tokens
-    if anthropic_request.model.startswith("openai/") or anthropic_request.model.startswith("gemini/"):
+    if anthropic_request.model.startswith("openai/") or anthropic_request.model.startswith("github/") or anthropic_request.model.startswith("gemini/"):
         max_tokens = min(max_tokens, 16384)
         logger.debug(f"Capping max_tokens to 16384 for OpenAI/Gemini model (original value: {anthropic_request.max_tokens})")
     
@@ -640,6 +674,8 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("github/"):
+            clean_model = clean_model[len("github/"):]
         
         # Check if this is a Claude model (which supports content blocks)
         is_claude_model = clean_model.startswith("claude-")
@@ -1109,6 +1145,8 @@ async def create_message(
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("github/"):
+            clean_model = clean_model[len("github/"):]
         
         logger.debug(f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}")
         
@@ -1127,12 +1165,15 @@ async def create_message(
         elif request.model.startswith("gemini/"):
             litellm_request["api_key"] = GEMINI_API_KEY
             logger.debug(f"Using Gemini API key for model: {request.model}")
+        elif request.model.startswith("github/"):
+            litellm_request["api_key"] = GITHUB_TOKEN
+            logger.debug(f"Using GITHUB_TOKEN for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
+        if ("openai" in litellm_request["model"] or "github" in litellm_request["model"]) and "messages" in litellm_request:
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
@@ -1390,6 +1431,8 @@ async def count_tokens(
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("github/"):
+            clean_model = clean_model[len("github/"):]
         
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(

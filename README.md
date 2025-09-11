@@ -126,15 +126,21 @@ The following Gemini models are supported with automatic `gemini/` prefix handli
 - gemini-2.5-pro-preview-03-25
 - gemini-2.0-flash
 
+#### iFlow Models
+The following iFlow models are supported with automatic `iflow/` prefix handling:
+- kimi-k2-0905
+
 ### Model Prefix Handling
 The proxy automatically adds the appropriate prefix to model names:
 - OpenAI models get the `openai/` prefix
 - Gemini models get the `gemini/` prefix
+- iFlow models get the `iflow/` prefix
 - The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
 
 For example:
 - `gpt-4o` becomes `openai/gpt-4o`
 - `gemini-2.5-pro-preview-03-25` becomes `gemini/gemini-2.5-pro-preview-03-25`
+- `kimi-k2-0905` becomes `iflow/kimi-k2-0905`
 - When BIG_MODEL is set to a Gemini model, Claude Sonnet will map to `gemini/[model-name]`
 
 ### Customizing Model Mapping
@@ -177,6 +183,13 @@ GEMINI_API_KEY="your-google-key"
 PREFERRED_PROVIDER="openai"
 BIG_MODEL="gpt-4o" # Example specific model
 SMALL_MODEL="gpt-4o-mini" # Example specific model
+```
+
+**Example 5: Use iFlow Models**
+```dotenv
+IFLOW_API_KEY="your-iflow-api-key"
+IFLOW_BASE_URL="https://apis.iflow.cn/v1"
+# You can now use iflow/kimi-k2-0905 model
 ```
 
 ## How It Works 🧩

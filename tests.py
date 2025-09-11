@@ -181,6 +181,34 @@ TEST_SCENARIOS = {
         ],
         "tools": [calculator_tool],
         "tool_choice": {"type": "auto"}
+    },
+    
+    # iFlow model tests
+    "iflow_kimi_simple": {
+        "model": "iflow/kimi-k2-0905",
+        "max_tokens": 300,
+        "messages": [
+            {"role": "user", "content": "Hello! Can you tell me about Beijing in 2-3 sentences?"}
+        ]
+    },
+    
+    "iflow_kimi_tools": {
+        "model": "iflow/kimi-k2-0905",
+        "max_tokens": 500,
+        "messages": [
+            {"role": "user", "content": "What is 150 + 25 multiplied by 3?"}
+        ],
+        "tools": [calculator_tool],
+        "tool_choice": {"type": "auto"}
+    },
+    
+    "iflow_kimi_stream": {
+        "model": "iflow/kimi-k2-0905",
+        "max_tokens": 200,
+        "stream": True,
+        "messages": [
+            {"role": "user", "content": "Count from 1 to 10, with one number per line."}
+        ]
     }
 }
 

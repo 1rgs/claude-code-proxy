@@ -81,6 +81,10 @@ app = FastAPI()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+IFLOW_API_KEY = os.environ.get("IFLOW_API_KEY")
+
+# Get iFlow base URL from environment (default to iFlow endpoint)
+IFLOW_BASE_URL = os.environ.get("IFLOW_BASE_URL", "https://apis.iflow.cn/v1")
 
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
@@ -113,6 +117,11 @@ OPENAI_MODELS = [
 GEMINI_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro"
+]
+
+# List of iFlow models
+IFLOW_MODELS = [
+    "kimi-k2-0905"
 ]
 
 # Helper function to clean schema for Gemini
@@ -205,6 +214,8 @@ class MessagesRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('iflow/'):
+            clean_v = clean_v[6:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -239,13 +250,16 @@ class MessagesRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in IFLOW_MODELS and not v.startswith('iflow/'):
+                new_model = f"iflow/{clean_v}"
+                mapped = True # Technically mapped to add prefix
         # --- Mapping Logic --- END ---
 
         if mapped:
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
              # If no mapping occurred and no prefix exists, log warning or decide default
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'iflow/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -283,6 +297,8 @@ class TokenCountRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('iflow/'):
+            clean_v = clean_v[6:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -312,12 +328,15 @@ class TokenCountRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in IFLOW_MODELS and not v.startswith('iflow/'):
+                new_model = f"iflow/{clean_v}"
+                mapped = True # Technically mapped to add prefix
         # --- Mapping Logic --- END ---
 
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'iflow/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -1127,6 +1146,13 @@ async def create_message(
         elif request.model.startswith("gemini/"):
             litellm_request["api_key"] = GEMINI_API_KEY
             logger.debug(f"Using Gemini API key for model: {request.model}")
+        elif request.model.startswith("iflow/"):
+            # iFlow is OpenAI-compatible, so we need to convert the model name
+            iflow_model_name = request.model.replace("iflow/", "")
+            litellm_request["model"] = f"openai/{iflow_model_name}"
+            litellm_request["api_key"] = IFLOW_API_KEY
+            litellm_request["api_base"] = IFLOW_BASE_URL
+            logger.debug(f"Using iFlow API key and base URL {IFLOW_BASE_URL} for model: {request.model} -> {litellm_request['model']}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
@@ -1390,6 +1416,8 @@ async def count_tokens(
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("iflow/"):
+            clean_model = clean_model[len("iflow/"):]
         
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(
@@ -1430,7 +1458,14 @@ async def count_tokens(
             
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                token_counter_args["api_base"] = OPENAI_BASE_URL
+                # Note: token_counter doesn't support api_base, so we'll use a fallback estimate
+                pass
+            # Add iFlow base URL for iFlow models (they use openai-compatible format)
+            elif request.model.startswith("iflow/"):
+                # Convert model name for token counting
+                iflow_model_name = request.model.replace("iflow/", "")
+                token_counter_args["model"] = f"openai/{iflow_model_name}"
+                # Note: token_counter doesn't support api_base, so we'll use a fallback estimate
             
             # Count tokens
             token_count = token_counter(**token_counter_args)
@@ -1465,8 +1500,8 @@ class Colors:
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
     DIM = "\033[2m"
-def log_request_beautifully(method, path, claude_model, openai_model, num_messages, num_tools, status_code):
-    """Log requests in a beautiful, twitter-friendly format showing Claude to OpenAI mapping."""
+def log_request_beautifully(method, path, claude_model, target_model, num_messages, num_tools, status_code):
+    """Log requests in a beautiful, twitter-friendly format showing Claude to target provider mapping."""
     # Format the Claude model name nicely
     claude_display = f"{Colors.CYAN}{claude_model}{Colors.RESET}"
     
@@ -1475,14 +1510,29 @@ def log_request_beautifully(method, path, claude_model, openai_model, num_messag
     if "?" in endpoint:
         endpoint = endpoint.split("?")[0]
     
-    # Extract just the OpenAI model name without provider prefix
-    openai_display = openai_model
-    if "/" in openai_display:
-        openai_display = openai_display.split("/")[-1]
-    openai_display = f"{Colors.GREEN}{openai_display}{Colors.RESET}"
+    # Extract provider and model name
+    if "/" in target_model:
+        provider, model_name = target_model.split("/", 1)
+    else:
+        provider = "unknown"
+        model_name = target_model
     
-    # Format tools and messages
-    tools_str = f"{Colors.MAGENTA}{num_tools} tools{Colors.RESET}"
+    # Choose color based on provider
+    if provider == "openai":
+        color = Colors.GREEN
+    elif provider == "gemini":
+        color = Colors.YELLOW
+    elif provider == "iflow":
+        color = Colors.MAGENTA
+    elif provider == "anthropic":
+        color = Colors.BLUE
+    else:
+        color = Colors.RESET
+    
+    target_display = f"{color}{model_name}{Colors.RESET}"
+    
+    # Format tools and messages  
+    tools_str = f"{Colors.RED}{num_tools} tools{Colors.RESET}"
     messages_str = f"{Colors.BLUE}{num_messages} messages{Colors.RESET}"
     
     # Format status code
@@ -1491,7 +1541,7 @@ def log_request_beautifully(method, path, claude_model, openai_model, num_messag
 
     # Put it all together in a clear, beautiful format
     log_line = f"{Colors.BOLD}{method} {endpoint}{Colors.RESET} {status_str}"
-    model_line = f"{claude_display} → {openai_display} {tools_str} {messages_str}"
+    model_line = f"{claude_display} → {target_display} {tools_str} {messages_str}"
     
     # Print to console
     print(log_line)

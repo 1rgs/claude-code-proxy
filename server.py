@@ -18,9 +18,74 @@ import sys
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
+# Environment variables with defaults
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")  
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")  
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai")
+BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
+SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+
+# List of OpenAI models
+OPENAI_MODELS = [
+    "o3-mini",
+    "o1",
+    "o1-mini",
+    "o1-pro",
+    "gpt-4.5-preview",
+    "gpt-4o",
+    "gpt-4o-audio-preview",
+    "chatgpt-4o-latest",
+    "gpt-4o-mini",
+    "gpt-4o-mini-audio-preview",
+    "gpt-4.1",  # Added default big model
+    "gpt-4.1-mini" # Added default small model
+]
+
+# List of Gemini models
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro"
+]
+
+# List of Qwen models (Alibaba Cloud Dashscope)
+QWEN_MODELS = [
+    "qwen3-coder-plus-2025-07-22",
+    "qwen3-coder-plus",
+    "qwen3-coder-flash",
+    "qwen-turbo",
+    "qwen-plus",
+    "qwen-max",
+    "qwen-max-0403",
+    "qwen-max-0107",
+    "qwen-max-longcontext",
+    "qwen2.5-72b-instruct",
+    "qwen2.5-32b-instruct",
+    "qwen2.5-14b-instruct",
+    "qwen2.5-7b-instruct",
+    "qwen2.5-3b-instruct",
+    "qwen2.5-1.5b-instruct",
+    "qwen2.5-0.5b-instruct",
+    "qwen2.5-coder-32b-instruct",
+    "qwen2.5-coder-14b-instruct",
+    "qwen2.5-coder-7b-instruct",
+    "qwen2.5-coder-3b-instruct",
+    "qwen2.5-coder-1.5b-instruct",
+    "qwen2.5-math-72b-instruct",
+    "qwen2.5-math-7b-instruct",
+    "qwen2.5-math-1.5b-instruct"
+]
+
+# Configure logging with dynamic level for Qwen debugging
+if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+    log_level = logging.DEBUG  # More verbose for Qwen models
+    print(f"🔧 QWEN DEBUGGING MODE: Enabled debug logging for models {BIG_MODEL}, {SMALL_MODEL}")
+else:
+    log_level = logging.WARN
+
 logging.basicConfig(
-    level=logging.WARN,  # Change to INFO level to show more details
+    level=log_level,
     format='%(asctime)s - %(levelname)s - %(message)s',
 )
 logger = logging.getLogger(__name__)
@@ -41,7 +106,9 @@ class MessageFilter(logging.Filter):
             "HTTP Request:", 
             "selected model name for cost calculation",
             "utils.py",
-            "cost_calculator"
+            "cost_calculator",
+            "This model isn't mapped yet",  # Block cost calculation errors for unmapped models
+            "Error getting model info"
         ]
         
         if hasattr(record, 'msg') and isinstance(record.msg, str):
@@ -76,44 +143,6 @@ for handler in logger.handlers:
         handler.setFormatter(ColorizedFormatter('%(asctime)s - %(levelname)s - %(message)s'))
 
 app = FastAPI()
-
-# Get API keys from environment
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# Get OpenAI base URL from environment (if set)
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
-
-# Get preferred provider (default to openai)
-PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
-
-# Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
-
-# List of OpenAI models
-OPENAI_MODELS = [
-    "o3-mini",
-    "o1",
-    "o1-mini",
-    "o1-pro",
-    "gpt-4.5-preview",
-    "gpt-4o",
-    "gpt-4o-audio-preview",
-    "chatgpt-4o-latest",
-    "gpt-4o-mini",
-    "gpt-4o-mini-audio-preview",
-    "gpt-4.1",  # Added default big model
-    "gpt-4.1-mini" # Added default small model
-]
-
-# List of Gemini models
-GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro"
-]
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
@@ -218,6 +247,9 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "openai" and SMALL_MODEL in QWEN_MODELS:
+                new_model = SMALL_MODEL  # Don't add prefix for Qwen models
+                mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
@@ -226,6 +258,9 @@ class MessagesRequest(BaseModel):
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "openai" and BIG_MODEL in QWEN_MODELS:
+                new_model = BIG_MODEL  # Don't add prefix for Qwen models
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -239,6 +274,10 @@ class MessagesRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in QWEN_MODELS and not any(v.startswith(prefix) for prefix in ['openai/', 'gemini/', 'anthropic/']):
+                # For Qwen models, don't add any prefix - use the model name as-is
+                new_model = clean_v
+                mapped = True # Keep original qwen model name
         # --- Mapping Logic --- END ---
 
         if mapped:
@@ -291,6 +330,9 @@ class TokenCountRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "openai" and SMALL_MODEL in QWEN_MODELS:
+                new_model = SMALL_MODEL  # Don't add prefix for Qwen models
+                mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
@@ -299,6 +341,9 @@ class TokenCountRequest(BaseModel):
         elif 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "openai" and BIG_MODEL in QWEN_MODELS:
+                new_model = BIG_MODEL  # Don't add prefix for Qwen models
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -312,6 +357,10 @@ class TokenCountRequest(BaseModel):
             elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
                 new_model = f"openai/{clean_v}"
                 mapped = True # Technically mapped to add prefix
+            elif clean_v in QWEN_MODELS and not any(v.startswith(prefix) for prefix in ['openai/', 'gemini/', 'anthropic/']):
+                # For Qwen models, don't add any prefix - use the model name as-is
+                new_model = clean_v
+                mapped = True # Keep original qwen model name
         # --- Mapping Logic --- END ---
 
         if mapped:
@@ -641,8 +690,11 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
         
-        # Check if this is a Claude model (which supports content blocks)
-        is_claude_model = clean_model.startswith("claude-")
+        # Check if this is a model that should support Anthropic-style content blocks
+        # This includes Claude models and models we're proxying to look like Claude (like qwen)
+        is_claude_model = (clean_model.startswith("claude-") or 
+                          clean_model in QWEN_MODELS or
+                          clean_model in GEMINI_MODELS)
         
         # Handle ModelResponse object from LiteLLM
         if hasattr(litellm_response, 'choices') and hasattr(litellm_response, 'usage'):
@@ -777,15 +829,20 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             completion_tokens = getattr(usage_info, "completion_tokens", 0)
         
         # Map OpenAI finish_reason to Anthropic stop_reason
-        stop_reason = None
-        if finish_reason == "stop":
+        stop_reason = "end_turn"  # Default
+        if finish_reason == "stop" or finish_reason == "eos" or finish_reason == "end":
             stop_reason = "end_turn"
-        elif finish_reason == "length":
+        elif finish_reason == "length" or finish_reason == "max_tokens":
             stop_reason = "max_tokens"
-        elif finish_reason == "tool_calls":
+        elif finish_reason == "tool_calls" or finish_reason == "function_call":
             stop_reason = "tool_use"
+        elif finish_reason == "content_filter":
+            stop_reason = "end_turn"  # Map content filter to end_turn
         else:
-            stop_reason = "end_turn"  # Default
+            # For unknown finish reasons, default to end_turn but log for debugging
+            if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+                logger.warning(f"🚨 Unknown finish_reason for Qwen (non-streaming): {finish_reason}")
+            stop_reason = "end_turn"
         
         # Make sure content is never empty
         if not content:
@@ -869,6 +926,16 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         # Process each chunk
         async for chunk in response_generator:
             try:
+                # Debug: Log chunk structure for Qwen models
+                if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+                    logger.debug(f"📦 QWEN CHUNK: {type(chunk)} - {chunk}")
+                    
+                    # Additional debug for streaming finish
+                    if hasattr(chunk, 'choices') and len(chunk.choices) > 0:
+                        choice = chunk.choices[0]
+                        if hasattr(choice, 'finish_reason') and choice.finish_reason:
+                            logger.debug(f"🏁 QWEN FINISH_REASON DETECTED: {choice.finish_reason}, accumulated_text length: {len(accumulated_text)}, text_sent: {text_sent}, tool_index: {tool_index}")
+                            logger.debug(f"📝 QWEN ACCUMULATED TEXT: '{accumulated_text[:200]}...' (first 200 chars)")
 
                 
                 # Check if this is the end of the response with usage data
@@ -892,6 +959,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     # Check for finish_reason to know when we're done
                     finish_reason = getattr(choice, 'finish_reason', None)
                     
+                    # Debug: Log finish_reason for Qwen models
+                    if finish_reason and (BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS):
+                        logger.debug(f"🏁 QWEN FINISH_REASON: {finish_reason}")
+                    
                     # Process text content
                     delta_content = None
                     
@@ -900,6 +971,10 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                         delta_content = delta.content
                     elif isinstance(delta, dict) and 'content' in delta:
                         delta_content = delta['content']
+                    
+                    # Debug for qwen models - log what content we're processing
+                    if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS and delta_content:
+                        logger.debug(f"🔤 QWEN CONTENT DELTA: '{delta_content}' (length: {len(delta_content)})")
                     
                     # Accumulate text content
                     if delta_content is not None and delta_content != "":
@@ -1025,16 +1100,27 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
                         
                         # Map OpenAI finish_reason to Anthropic stop_reason
-                        stop_reason = "end_turn"
-                        if finish_reason == "length":
+                        stop_reason = "end_turn"  # Default
+                        if finish_reason == "length" or finish_reason == "max_tokens":
                             stop_reason = "max_tokens"
-                        elif finish_reason == "tool_calls":
+                        elif finish_reason == "tool_calls" or finish_reason == "function_call":
                             stop_reason = "tool_use"
-                        elif finish_reason == "stop":
+                        elif finish_reason == "stop" or finish_reason == "eos" or finish_reason == "end":
+                            stop_reason = "end_turn"
+                        elif finish_reason == "content_filter":
+                            stop_reason = "end_turn"  # Map content filter to end_turn
+                        else:
+                            # For unknown finish reasons, default to end_turn but log for debugging
+                            if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+                                logger.warning(f"🚨 Unknown finish_reason for Qwen: {finish_reason}")
                             stop_reason = "end_turn"
                         
                         # Send message_delta with stop reason and usage
                         usage = {"output_tokens": output_tokens}
+                        
+                        # Debug for qwen models
+                        if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+                            logger.debug(f"🔚 QWEN SENDING FINAL EVENTS: stop_reason={stop_reason}, text_sent={text_sent}, text_block_closed={text_block_closed}, accumulated_text_length={len(accumulated_text)}")
                         
                         yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': usage})}\n\n"
                         
@@ -1045,8 +1131,17 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                         yield "data: [DONE]\n\n"
                         return
             except Exception as e:
-                # Log error but continue processing other chunks
-                logger.error(f"Error processing chunk: {str(e)}")
+                # Enhanced error logging for debugging Qwen issues
+                import traceback
+                error_traceback = traceback.format_exc()
+                logger.error(f"❌ Error processing chunk for {original_request.model}: {str(e)}")
+                logger.error(f"📜 Full error traceback:\n{error_traceback}")
+                
+                # Log the problematic chunk if it's a Qwen model
+                if BIG_MODEL in QWEN_MODELS or SMALL_MODEL in QWEN_MODELS:
+                    logger.error(f"🔍 Problematic chunk: {chunk}")
+                
+                # Continue processing other chunks rather than failing completely
                 continue
         
         # If we didn't get a finish reason, close any open blocks
@@ -1122,6 +1217,21 @@ async def create_message(
             if OPENAI_BASE_URL:
                 litellm_request["api_base"] = OPENAI_BASE_URL
                 logger.debug(f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}")
+                
+                # For qwen models via custom endpoint, we need to tell LiteLLM it's openai compatible
+                clean_model_name = request.model
+                if "/" in clean_model_name:
+                    clean_model_name = clean_model_name.split("/")[-1]
+                
+                if clean_model_name in QWEN_MODELS:
+                    # Tell LiteLLM this is an openai-compatible model
+                    # For qwen-coder models, use openrouter/qwen/qwen3-coder to avoid cost calculation errors
+                    if "coder" in clean_model_name:
+                        litellm_request["model"] = "openrouter/qwen/qwen3-coder"
+                        logger.debug(f"Using openrouter/qwen/qwen3-coder mapping for qwen-coder model in LiteLLM: {clean_model_name} -> openrouter/qwen/qwen3-coder")
+                    else:
+                        litellm_request["model"] = f"openai/{clean_model_name}"
+                        logger.debug(f"Using openai/ prefix for qwen model in LiteLLM: {litellm_request['model']}")
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
@@ -1431,6 +1541,22 @@ async def count_tokens(
             # Add custom base URL for OpenAI models if configured
             if model_is_openai_compatible(request.model, OPENAI_BASE_URL):
                 token_counter_args["api_base"] = OPENAI_BASE_URL
+                
+                # For qwen models via custom endpoint, we need to tell LiteLLM it's openai compatible
+                clean_model_name = request.model
+                if "/" in clean_model_name:
+                    clean_model_name = clean_model_name.split("/")[-1]
+                
+                if clean_model_name in QWEN_MODELS:
+                    # Tell LiteLLM this is an openai-compatible model for token counting
+                    # For qwen-coder models, use gpt-4 to avoid cost calculation errors
+                    if "coder" in clean_model_name:
+                        token_counter_args["model"] = "openai/gpt-4"
+                        logger.debug(f"Using gpt-4 mapping for qwen-coder model in token counter: {clean_model_name} -> gpt-4")
+                    else:
+                        token_counter_args["model"] = f"openai/{clean_model_name}"
+                        logger.debug(f"Using openai/ prefix for qwen model in token counter: {token_counter_args['model']}")
+            
             # Count tokens
             token_count = token_counter(**token_counter_args)
             

@@ -1,0 +1,7 @@
+services:
+  proxy:
+    image: claude-proxy:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - 8082:8082

@@ -1428,10 +1428,14 @@ async def count_tokens(
                 "messages": converted_request["messages"],
             }
             
+            # OpenAI-compatible service providers
+            openai_compatible_providers = ["https://dashscope.aliyuncs.com/compatible-mode/v1"]
+
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
                 token_counter_args["api_base"] = OPENAI_BASE_URL
-            
+            elif OPENAI_BASE_URL is not None and OPENAI_BASE_URL in openai_compatible_providers:
+                token_counter_args["api_base"] = OPENAI_BASE_URL
             # Count tokens
             token_count = token_counter(**token_counter_args)
             

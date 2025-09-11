@@ -1116,7 +1116,7 @@ async def create_message(
         litellm_request = convert_anthropic_to_litellm(request)
         
         # Determine which API key to use based on the model
-        if request.model.startswith("openai/"):
+        if model_is_openai_compatible(request.model, OPENAI_BASE_URL):
             litellm_request["api_key"] = OPENAI_API_KEY
             # Use custom OpenAI base URL if configured
             if OPENAI_BASE_URL:
@@ -1432,9 +1432,7 @@ async def count_tokens(
             openai_compatible_providers = ["https://dashscope.aliyuncs.com/compatible-mode/v1"]
 
             # Add custom base URL for OpenAI models if configured
-            if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                token_counter_args["api_base"] = OPENAI_BASE_URL
-            elif OPENAI_BASE_URL is not None and OPENAI_BASE_URL in openai_compatible_providers:
+            if model_is_openai_compatible(request.model, OPENAI_BASE_URL):
                 token_counter_args["api_base"] = OPENAI_BASE_URL
             # Count tokens
             token_count = token_counter(**token_counter_args)
@@ -1452,6 +1450,15 @@ async def count_tokens(
         error_traceback = traceback.format_exc()
         logger.error(f"Error counting tokens: {str(e)}\n{error_traceback}")
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
+
+def model_is_openai_compatible(model, openai_base_url) -> bool:
+    openai_compatible_providers = ["https://dashscope.aliyuncs.com/compatible-mode/v1", "https://open.bigmodel.cn/api/paas/v4/", "https://api.siliconflow.cn"]
+    if openai_base_url in openai_compatible_providers:
+        return True
+    if model.startswith("openai/"):
+        return True
+    return False
+
 
 @app.get("/")
 async def root():

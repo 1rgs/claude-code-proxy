@@ -123,8 +123,8 @@ The following OpenAI models are supported with automatic `openai/` prefix handli
 
 #### Gemini Models
 The following Gemini models are supported with automatic `gemini/` prefix handling:
-- gemini-2.5-pro-preview-03-25
-- gemini-2.0-flash
+- gemini-2.5-pro
+- gemini-2.5-flash
 
 ### Model Prefix Handling
 The proxy automatically adds the appropriate prefix to model names:
@@ -156,8 +156,8 @@ GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=google
 GEMINI_API_KEY="your-google-key"
 OPENAI_API_KEY="your-openai-key" # Needed for fallback
 PREFERRED_PROVIDER="google"
-# BIG_MODEL="gemini-2.5-pro-preview-03-25" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.0-flash" # Optional, it's the default for Google pref
+# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
+# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
 ```
 
 **Example 3: Use Direct Anthropic ("Just an Anthropic Proxy" Mode)**

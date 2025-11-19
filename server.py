@@ -561,6 +561,32 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         "stream": anthropic_request.stream,
     }
 
+    # For OpenAI Responses-style models (e.g., gpt-5, gpt-4.1, gpt-4o, o3/o4), use `max_completion_tokens`
+    try:
+        model_with_prefix = anthropic_request.model
+        clean_model_name = model_with_prefix.split("/", 1)[-1]
+        responses_prefixes = (
+            "gpt-5",
+            "gpt-4.1",
+            "gpt-4o",
+            "o3",
+            "o4",
+            "omni",
+            "chatgpt-4o",
+            "gpt-4.5",
+        )
+        if (model_with_prefix.startswith("openai/") or not any(model_with_prefix.startswith(p + "/") for p in ("anthropic", "gemini"))) \
+            and any(clean_model_name.startswith(p) for p in responses_prefixes):
+            # Move value from max_tokens -> max_completion_tokens to satisfy OpenAI Responses API
+            mt_value = litellm_request.pop("max_tokens", max_tokens)
+            litellm_request["max_completion_tokens"] = mt_value
+            logger.debug(
+                f"Using max_completion_tokens for OpenAI Responses model: {clean_model_name} (value={mt_value})"
+            )
+    except Exception as _e:
+        # Do not fail conversion if detection logic errors; fallback to existing behavior
+        pass
+
     # Only include thinking field for Anthropic models
     if anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
         litellm_request["thinking"] = anthropic_request.thinking
@@ -1123,7 +1149,21 @@ async def create_message(
         litellm_request = convert_anthropic_to_litellm(request)
         
         # Determine which API key to use based on the model
-        if request.model.startswith("openai/"):
+        # Also treat unprefixed OpenAI Responses models (e.g., gpt-5, gpt-4.1, gpt-4o, o3/o4) as OpenAI
+        responses_prefixes = (
+            "gpt-5",
+            "gpt-4.1",
+            "gpt-4o",
+            "o3",
+            "o4",
+            "omni",
+            "chatgpt-4o",
+            "gpt-4.5",
+        )
+        clean_model_name_for_key = request.model.split("/", 1)[-1]
+        is_openai_response_model = any(clean_model_name_for_key.startswith(p) for p in responses_prefixes)
+
+        if request.model.startswith("openai/") or (not request.model.startswith(("anthropic/", "gemini/")) and is_openai_response_model):
             litellm_request["api_key"] = OPENAI_API_KEY
             # Use custom OpenAI base URL if configured
             if OPENAI_BASE_URL:
@@ -1145,7 +1185,7 @@ async def create_message(
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
+        if (("openai" in litellm_request["model"]) or is_openai_response_model) and ("messages" in litellm_request):
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings

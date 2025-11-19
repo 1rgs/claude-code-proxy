@@ -13,6 +13,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 - OpenAI API key 🔑
 - Google AI Studio (Gemini) API key (if using Google provider) 🔑
+- Google Cloud Project with Vertex AI API enabled (if using Application Default Credentials for Gemini) ☁️
 - [uv](https://github.com/astral-sh/uv) installed.
 
 ### Setup 🛠️
@@ -40,7 +41,10 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
-   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if PREFERRED_PROVIDER=google).
+   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
+   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
    *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
@@ -151,11 +155,22 @@ GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=google
 # SMALL_MODEL="gpt-4.1-mini" # Optional, it's the default
 ```
 
-**Example 2: Prefer Google**
+**Example 2a: Prefer Google (using GEMINI_API_KEY)**
 ```dotenv
 GEMINI_API_KEY="your-google-key"
 OPENAI_API_KEY="your-openai-key" # Needed for fallback
 PREFERRED_PROVIDER="google"
+# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
+# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
+```
+
+**Example 2b: Prefer Google (using Vertex AI with Application Default Credentials)**
+```dotenv
+OPENAI_API_KEY="your-openai-key" # Needed for fallback
+PREFERRED_PROVIDER="google"
+VERTEX_PROJECT="your-gcp-project-id"
+VERTEX_LOCATION="us-central1"
+USE_VERTEX_AUTH=true
 # BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
 # SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
 ```

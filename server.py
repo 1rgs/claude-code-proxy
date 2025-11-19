@@ -82,6 +82,13 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Get Vertex AI project and location from environment (if set)
+VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", "unset")
+VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "unset")
+
+# Option to use Gemini API key instead of ADC for Vertex AI
+USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
+
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
@@ -549,7 +556,7 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     litellm_request = {
         "model": anthropic_request.model,  # it understands "anthropic/claude-x" format
         "messages": messages,
-        "max_tokens": max_tokens,
+        "max_completion_tokens": max_tokens,
         "temperature": anthropic_request.temperature,
         "stream": anthropic_request.stream,
     }
@@ -1125,8 +1132,14 @@ async def create_message(
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
-            litellm_request["api_key"] = GEMINI_API_KEY
-            logger.debug(f"Using Gemini API key for model: {request.model}")
+            if USE_VERTEX_AUTH:
+                litellm_request["vertex_project"] = VERTEX_PROJECT
+                litellm_request["vertex_location"] = VERTEX_LOCATION
+                litellm_request["custom_llm_provider"] = "vertex_ai"
+                logger.debug(f"Using Gemini ADC with project={VERTEX_PROJECT}, location={VERTEX_LOCATION} and model: {request.model}")
+            else:
+                litellm_request["api_key"] = GEMINI_API_KEY
+                logger.debug(f"Using Gemini API key for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")

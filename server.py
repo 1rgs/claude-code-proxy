@@ -100,6 +100,13 @@ PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
 SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
 
+# Fix for OpenAI models that don't handle empty tool results well.
+# OpenAI models can halt or behave unexpectedly when they receive empty tool results
+# (e.g., from file reads that return nothing, or commands with no output).
+# When enabled, this replaces empty content with a placeholder string.
+FIX_EMPTY_TOOL_RESULTS = os.environ.get("FIX_EMPTY_TOOL_RESULTS", "").lower() in ("1", "true", "yes")
+EMPTY_TOOL_RESULT_PLACEHOLDER = os.environ.get("EMPTY_TOOL_RESULT_PLACEHOLDER", "NULL")
+
 # List of OpenAI models
 OPENAI_MODELS = [
     "o3-mini",
@@ -370,14 +377,37 @@ async def log_requests(request: Request, call_next):
 
 # Not using validation function as we're using the environment API key
 
-def parse_tool_result_content(content):
-    """Helper function to properly parse and normalize tool result content."""
-    if content is None:
-        return "No content provided"
-        
-    if isinstance(content, str):
+
+def fix_empty_tool_result(content: str) -> str:
+    """Replace empty tool result content with placeholder if FIX_EMPTY_TOOL_RESULTS is enabled.
+
+    OpenAI models can halt or produce unexpected behavior when receiving empty tool results.
+    This commonly happens with:
+    - File reads that return empty files
+    - Shell commands with no output
+    - API calls that return empty responses
+
+    When FIX_EMPTY_TOOL_RESULTS=1, empty content is replaced with EMPTY_TOOL_RESULT_PLACEHOLDER.
+    """
+    if not FIX_EMPTY_TOOL_RESULTS:
         return content
-        
+    if content is None or (isinstance(content, str) and not content.strip()):
+        return EMPTY_TOOL_RESULT_PLACEHOLDER
+    return content
+
+
+def parse_tool_result_content(content):
+    """Helper function to properly parse and normalize tool result content.
+
+    When FIX_EMPTY_TOOL_RESULTS is enabled, empty results are replaced with a placeholder
+    to prevent OpenAI models from halting on empty tool output.
+    """
+    if content is None:
+        return fix_empty_tool_result("No content provided")
+
+    if isinstance(content, str):
+        return fix_empty_tool_result(content)
+
     if isinstance(content, list):
         result = ""
         for item in content:
@@ -398,21 +428,22 @@ def parse_tool_result_content(content):
                     result += str(item) + "\n"
                 except:
                     result += "Unparseable content\n"
-        return result.strip()
-        
+        return fix_empty_tool_result(result.strip())
+
     if isinstance(content, dict):
         if content.get("type") == "text":
-            return content.get("text", "")
+            return fix_empty_tool_result(content.get("text", ""))
         try:
-            return json.dumps(content)
+            return fix_empty_tool_result(json.dumps(content))
         except:
-            return str(content)
-            
+            return fix_empty_tool_result(str(content))
+
     # Fallback for any other type
     try:
-        return str(content)
+        return fix_empty_tool_result(str(content))
     except:
         return "Unparseable content"
+
 
 def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str, Any]:
     """Convert Anthropic API request format to LiteLLM format (which follows OpenAI)."""

@@ -92,6 +92,12 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Log startup config for debugging - helps identify proxy mode issues
+if OPENAI_BASE_URL:
+    print(f"🔀 Custom OPENAI_BASE_URL: {OPENAI_BASE_URL}", file=sys.stderr)
+else:
+    print(f"📡 Using default OpenAI API endpoint", file=sys.stderr)
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 

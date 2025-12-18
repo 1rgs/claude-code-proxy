@@ -45,6 +45,8 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `PASSTHROUGH_API_KEY` (Optional): Set to `true` to extract API keys from incoming request headers (`x-api-key` or `Authorization Bearer`) and forward them to upstream services instead of using static API keys. Useful for multi-tenant environments with per-user quota tracking. **If passthrough mode is enabled but no valid API key is found in the request, the proxy will fall back to using the static API keys provided via environment variables.**
+   *   `REQUIRE_PASSTHROUGH_KEY` (Optional): Set to `true` to reject requests when passthrough mode is enabled but no valid API key is found in the request headers. This prevents silent fallback to static API keys and ensures strict per-user quota tracking in multi-tenant environments. Requires `PASSTHROUGH_API_KEY=true`.
    *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
    *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
@@ -193,6 +195,17 @@ PREFERRED_PROVIDER="openai"
 BIG_MODEL="gpt-4o" # Example specific model
 SMALL_MODEL="gpt-4o-mini" # Example specific model
 ```
+
+**Example 5: Multi-tenant Environment with Required API Keys**
+```dotenv
+OPENAI_API_KEY="your-openai-key" # Fallback key
+GEMINI_API_KEY="your-google-key" # Fallback key
+PASSTHROUGH_API_KEY=true # Enable passthrough mode
+REQUIRE_PASSTHROUGH_KEY=true # Require valid API key, no fallback
+PREFERRED_PROVIDER="openai"
+```
+
+*Use case: This ensures strict per-user quota tracking by rejecting any request without a valid API key, preventing silent fallback to shared static keys.*
 
 ## How It Works 🧩
 

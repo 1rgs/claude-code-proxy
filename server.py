@@ -92,6 +92,20 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Option to pass through the incoming API key from request header to upstream
+# When enabled, the x-api-key or Authorization Bearer header from the incoming request is used instead of OPENAI_API_KEY
+# This enables per-user quota tracking when routing through a gateway
+PASSTHROUGH_API_KEY = os.environ.get("PASSTHROUGH_API_KEY", "False").lower() == "true"
+
+# Option to require a valid API key when passthrough mode is enabled
+# When enabled, requests without valid API keys will be rejected instead of falling back to static keys
+REQUIRE_PASSTHROUGH_KEY = os.environ.get("REQUIRE_PASSTHROUGH_KEY", "False").lower() == "true"
+
+# Validate configuration
+if REQUIRE_PASSTHROUGH_KEY and not PASSTHROUGH_API_KEY:
+    logger.error("REQUIRE_PASSTHROUGH_KEY=true requires PASSTHROUGH_API_KEY=true")
+    raise ValueError("REQUIRE_PASSTHROUGH_KEY=true requires PASSTHROUGH_API_KEY=true")
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
@@ -99,6 +113,7 @@ PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 # Default to latest OpenAI models if not set
 BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
 SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+OPUS_MODEL = os.environ.get("OPUS_MODEL", "gpt-4.1")
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -220,8 +235,8 @@ class MessagesRequest(BaseModel):
             new_model = f"anthropic/{clean_v}"
             mapped = True
 
-        # Map Haiku to SMALL_MODEL based on provider preference
-        elif 'haiku' in clean_v.lower():
+        # Map small models (claude-small, haiku) to SMALL_MODEL based on provider preference
+        elif 'claude-small' in clean_v.lower() or 'haiku' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
@@ -229,13 +244,22 @@ class MessagesRequest(BaseModel):
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
+        # Map medium models (claude-medium, sonnet) to BIG_MODEL based on provider preference
+        elif 'claude-medium' in clean_v.lower() or 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
+                mapped = True
+
+        # Map large models (claude-large, opus) to OPUS_MODEL based on provider preference
+        elif 'claude-large' in clean_v.lower() or 'opus' in clean_v.lower():
+            if PREFERRED_PROVIDER == "google" and OPUS_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{OPUS_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{OPUS_MODEL}"
                 mapped = True
 
         # Add prefixes to non-mapped models if they match known lists
@@ -293,8 +317,8 @@ class TokenCountRequest(BaseModel):
 
         # --- Mapping Logic --- START ---
         mapped = False
-        # Map Haiku to SMALL_MODEL based on provider preference
-        if 'haiku' in clean_v.lower():
+        # Map small models (claude-small, haiku) to SMALL_MODEL based on provider preference
+        if 'claude-small' in clean_v.lower() or 'haiku' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
@@ -302,13 +326,22 @@ class TokenCountRequest(BaseModel):
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
+        # Map medium models (claude-medium, sonnet) to BIG_MODEL based on provider preference
+        elif 'claude-medium' in clean_v.lower() or 'sonnet' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
+                mapped = True
+
+        # Map large models (claude-large, opus) to OPUS_MODEL based on provider preference
+        elif 'claude-large' in clean_v.lower() or 'opus' in clean_v.lower():
+            if PREFERRED_PROVIDER == "google" and OPUS_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{OPUS_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{OPUS_MODEL}"
                 mapped = True
 
         # Add prefixes to non-mapped models if they match known lists
@@ -1122,15 +1155,54 @@ async def create_message(
         # Convert Anthropic request to LiteLLM format
         litellm_request = convert_anthropic_to_litellm(request)
         
+        # Extract incoming API key from request header for passthrough mode
+        incoming_api_key = None
+        if PASSTHROUGH_API_KEY:
+            # Try x-api-key header first (Anthropic style), then Authorization Bearer
+            incoming_api_key = raw_request.headers.get("x-api-key")
+            if not incoming_api_key:
+                auth_header = raw_request.headers.get("authorization", "")
+                if auth_header.lower().startswith("bearer "):
+                    incoming_api_key = auth_header[7:]
+
+            # Basic validation - check if key is not empty, has reasonable length, and basic format
+            if incoming_api_key:
+                incoming_api_key = incoming_api_key.strip()
+                # Check minimum length and basic character validation
+                if len(incoming_api_key) >= 10 and incoming_api_key.replace('-', '').replace('_', '').replace(' ', '').isalnum():
+                    logger.debug("Passthrough mode: using API key from request header")
+                else:
+                    incoming_api_key = None
+                    logger.warning("Passthrough mode enabled but API key failed validation (invalid format or too short)")
+            else:
+                logger.warning("Passthrough mode enabled but no API key found in request headers (expected x-api-key or Authorization Bearer)")
+
+        # Check if REQUIRE_PASSTHROUGH_KEY is enabled and no valid API key was found
+        if REQUIRE_PASSTHROUGH_KEY and PASSTHROUGH_API_KEY and not incoming_api_key:
+            error_msg = "REQUIRE_PASSTHROUGH_KEY is enabled but no valid API key was found in request headers (x-api-key or Authorization Bearer)"
+            logger.error(error_msg)
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": error_msg,
+                    "type": "authentication_error",
+                    "code": "missing_api_key"
+                }
+            )
+
+        # Determine whether to use passthrough for logging consistency
+        use_passthrough = PASSTHROUGH_API_KEY and incoming_api_key
+
         # Determine which API key to use based on the model
         if request.model.startswith("openai/"):
-            litellm_request["api_key"] = OPENAI_API_KEY
+            # Use passthrough key if enabled, otherwise fall back to env var
+            litellm_request["api_key"] = incoming_api_key if use_passthrough else OPENAI_API_KEY
             # Use custom OpenAI base URL if configured
             if OPENAI_BASE_URL:
                 litellm_request["api_base"] = OPENAI_BASE_URL
-                logger.debug(f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}")
+                logger.debug(f"Using {'passthrough' if use_passthrough else 'OpenAI'} API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}")
             else:
-                logger.debug(f"Using OpenAI API key for model: {request.model}")
+                logger.debug(f"Using {'passthrough' if use_passthrough else 'OpenAI'} API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
             if USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
@@ -1138,11 +1210,13 @@ async def create_message(
                 litellm_request["custom_llm_provider"] = "vertex_ai"
                 logger.debug(f"Using Gemini ADC with project={VERTEX_PROJECT}, location={VERTEX_LOCATION} and model: {request.model}")
             else:
-                litellm_request["api_key"] = GEMINI_API_KEY
-                logger.debug(f"Using Gemini API key for model: {request.model}")
+                # Use passthrough key if enabled, otherwise fall back to env var
+                litellm_request["api_key"] = incoming_api_key if use_passthrough else GEMINI_API_KEY
+                logger.debug(f"Using {'passthrough' if use_passthrough else 'Gemini'} API key for model: {request.model}")
         else:
-            litellm_request["api_key"] = ANTHROPIC_API_KEY
-            logger.debug(f"Using Anthropic API key for model: {request.model}")
+            # Use passthrough key if enabled, otherwise fall back to env var
+            litellm_request["api_key"] = incoming_api_key if use_passthrough else ANTHROPIC_API_KEY
+            logger.debug(f"Using {'passthrough' if use_passthrough else 'Anthropic'} API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
         if "openai" in litellm_request["model"] and "messages" in litellm_request:

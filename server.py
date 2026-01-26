@@ -4,6 +4,7 @@ Anthropic API Proxy for LiteLLM - Refactored with Provider Architecture
 This server acts as a proxy between Anthropic API requests and various LLM backends
 through LiteLLM, using a provider-based architecture for extensibility.
 """
+
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -33,8 +34,7 @@ litellm.modify_params = True
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.WARN, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+
 
 # Custom filter to block LiteLLM verbose logs
 class MessageFilter(logging.Filter):
@@ -51,14 +52,16 @@ class MessageFilter(logging.Filter):
             "HTTP Request:",
             "selected model name for cost calculation",
             "utils.py",
-            "cost_calculator"
+            "cost_calculator",
         ]
-        if hasattr(record, 'msg') and isinstance(record.msg, str):
+        if hasattr(record, "msg") and isinstance(record.msg, str):
             return not any(phrase in record.msg for phrase in blocked_phrases)
         return True
 
+
 root_logger = logging.getLogger()
 root_logger.addFilter(MessageFilter())
+
 
 # Custom colorized formatter for model mapping logs
 class ColorizedFormatter(logging.Formatter):
@@ -74,10 +77,13 @@ class ColorizedFormatter(logging.Formatter):
             return f"{self.BOLD}{self.GREEN}{record.msg}{self.RESET}"
         return super().format(record)
 
+
 # Apply custom formatter
 for handler in logger.handlers:
     if isinstance(handler, logging.StreamHandler):
-        handler.setFormatter(ColorizedFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+        handler.setFormatter(
+            ColorizedFormatter("%(asctime)s - %(levelname)s - %(message)s")
+        )
 
 # Import provider architecture
 from src.providers.registry import ProviderRegistry
@@ -117,22 +123,30 @@ def get_provider_config(provider_name: str) -> ProviderConfig:
     """Get provider configuration from environment variables."""
     if provider_name == "openai":
         return ProviderConfig(
-            api_key=os.getenv("OPENAI_API_KEY", ""),
-            base_url=OPENAI_BASE_URL
+            api_key=os.getenv("OPENAI_API_KEY", ""), base_url=OPENAI_BASE_URL
         )
     elif provider_name == "gemini":
         return ProviderConfig(
-            api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+            api_key=os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
         )
     elif provider_name == "anthropic":
-        return ProviderConfig(
-            api_key=os.getenv("ANTHROPIC_API_KEY", "")
-        )
+        return ProviderConfig(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     elif provider_name == "nvidia_nim":
         return ProviderConfig(
             api_key=os.getenv("NVIDIA_NIM_API_KEY", ""),
-            base_url=os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"),
-            rate_limit=int(os.getenv("NVIDIA_NIM_RATE_LIMIT", "40"))
+            base_url=os.getenv(
+                "NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"
+            ),
+            rate_limit=int(os.getenv("NVIDIA_NIM_RATE_LIMIT", "40")),
+        )
+    elif provider_name == "nvidia_nim_direct":
+        return ProviderConfig(
+            api_key=os.getenv("NVIDIA_NIM_API_KEY", ""),
+            base_url=os.getenv(
+                "NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"
+            ),
+            rate_limit=int(os.getenv("NVIDIA_NIM_RATE_LIMIT", "40")),
         )
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
@@ -158,7 +172,9 @@ def configure_litellm_for_provider(provider_name: str):
 
 # Initialize the provider
 try:
-    provider = ProviderRegistry.get(PREFERRED_PROVIDER, get_provider_config(PREFERRED_PROVIDER))
+    provider = ProviderRegistry.get(
+        PREFERRED_PROVIDER, get_provider_config(PREFERRED_PROVIDER)
+    )
     logger.info(f"Initialized provider: {PREFERRED_PROVIDER}")
 except ValueError as e:
     logger.error(f"Failed to initialize provider: {e}")
@@ -179,14 +195,18 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
     try:
         # Log the request details
         body = await raw_request.body()
-        body_json = json.loads(body.decode('utf-8'))
+        body_json = json.loads(body.decode("utf-8"))
         original_model = body_json.get("model", "unknown")
-        display_model = original_model.split("/")[-1] if "/" in original_model else original_model
+        display_model = (
+            original_model.split("/")[-1] if "/" in original_model else original_model
+        )
 
-        logger.debug(f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}")
+        logger.debug(
+            f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}"
+        )
 
         # Check if this is a direct provider (bypasses LiteLLM)
-        is_direct_provider = hasattr(provider, 'stream_response_direct')
+        is_direct_provider = hasattr(provider, "stream_response_direct")
 
         if is_direct_provider:
             # Direct provider - bypasses LiteLLM entirely
@@ -198,13 +218,13 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 request_data.model,
                 len(request_data.messages),
                 num_tools,
-                200
+                200,
             )
 
             if request_data.stream:
                 return StreamingResponse(
                     provider.stream_response_direct(request_data),
-                    media_type="text/event-stream"
+                    media_type="text/event-stream",
                 )
             else:
                 response_json = await provider.call_api_direct(request_data)
@@ -214,8 +234,10 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
             configure_litellm_for_provider(PREFERRED_PROVIDER)
 
             if request_data.stream:
-                if hasattr(provider, 'prepare_streaming_request_async'):
-                    litellm_request = await provider.prepare_streaming_request_async(request_data)
+                if hasattr(provider, "prepare_streaming_request_async"):
+                    litellm_request = await provider.prepare_streaming_request_async(
+                        request_data
+                    )
                 else:
                     litellm_request = provider.prepare_streaming_request(request_data)
                 response_generator = await litellm.acompletion(**litellm_request)
@@ -226,23 +248,25 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                     "POST",
                     raw_request.url.path,
                     display_model,
-                    litellm_request.get('model'),
-                    len(litellm_request['messages']),
+                    litellm_request.get("model"),
+                    len(litellm_request["messages"]),
                     num_tools,
-                    200
+                    200,
                 )
 
                 return StreamingResponse(
                     provider.stream_response(response_generator),
-                    media_type="text/event-stream"
+                    media_type="text/event-stream",
                 )
             else:
-                if hasattr(provider, 'prepare_request_async'):
+                if hasattr(provider, "prepare_request_async"):
                     litellm_request = await provider.prepare_request_async(request_data)
                 else:
                     litellm_request = provider.prepare_request(request_data)
                 litellm_response = await litellm.acompletion(**litellm_request)
-                anthropic_response = provider.convert_response(litellm_response, request_data)
+                anthropic_response = provider.convert_response(
+                    litellm_response, request_data
+                )
 
                 # Log beautifully
                 num_tools = len(request_data.tools) if request_data.tools else 0
@@ -250,38 +274,51 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                     "POST",
                     raw_request.url.path,
                     display_model,
-                    litellm_request.get('model'),
-                    len(litellm_request['messages']),
+                    litellm_request.get("model"),
+                    len(litellm_request["messages"]),
                     num_tools,
-                    200
+                    200,
                 )
 
                 return anthropic_response
 
     except Exception as e:
         import traceback
+
         error_traceback = traceback.format_exc()
 
         error_details = {
             "error": str(e),
             "type": type(e).__name__,
-            "traceback": error_traceback
+            "traceback": error_traceback,
         }
 
         # Check for LiteLLM-specific attributes
-        for attr in ['message', 'status_code', 'response', 'llm_provider', 'model']:
+        for attr in ["message", "status_code", "response", "llm_provider", "model"]:
             if hasattr(e, attr):
                 error_details[attr] = getattr(e, attr)
 
         # Safe JSON serialization
-        def sanitize_for_json(obj):
+        def sanitize_for_json(obj, visited=None):
+            if visited is None:
+                visited = set()
+
+            obj_id = id(obj)
+            if obj_id in visited:
+                return f"<Circular reference to {type(obj).__name__} at {hex(obj_id)}>"
+
             if isinstance(obj, dict):
-                return {k: sanitize_for_json(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [sanitize_for_json(item) for item in obj]
-            elif hasattr(obj, '__dict__'):
-                return sanitize_for_json(obj.__dict__)
-            elif hasattr(obj, 'text'):
+                visited.add(obj_id)
+                return {
+                    str(k): sanitize_for_json(v, visited.copy()) for k, v in obj.items()
+                }
+            elif isinstance(obj, (list, tuple, set)):
+                visited.add(obj_id)
+                return [sanitize_for_json(item, visited.copy()) for item in obj]
+            elif hasattr(obj, "__dict__"):
+                visited.add(obj_id)
+                return sanitize_for_json(obj.__dict__, visited.copy())
+            elif hasattr(obj, "text"):
                 return str(obj.text)
             else:
                 try:
@@ -291,13 +328,15 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                     return str(obj)
 
         sanitized_details = sanitize_for_json(error_details)
-        logger.error(f"Error processing request: {json.dumps(sanitized_details, indent=2)}")
+        logger.error(
+            f"Error processing request: {json.dumps(sanitized_details, indent=2)}"
+        )
 
         error_message = f"Error: {str(e)}"
-        if 'message' in error_details and error_details['message']:
+        if "message" in error_details and error_details["message"]:
             error_message += f"\nMessage: {error_details['message']}"
 
-        status_code = error_details.get('status_code', 500)
+        status_code = error_details.get("status_code", 500)
         raise HTTPException(status_code=status_code, detail=error_message)
 
 
@@ -309,7 +348,9 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
 
         # Log the request
         original_model = request_data.original_model or request_data.model
-        display_model = original_model.split("/")[-1] if "/" in original_model else original_model
+        display_model = (
+            original_model.split("/")[-1] if "/" in original_model else original_model
+        )
 
         # Configure LiteLLM for this provider
         configure_litellm_for_provider(PREFERRED_PROVIDER)
@@ -322,9 +363,9 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             system=request_data.system,
             tools=request_data.tools,
             tool_choice=request_data.tool_choice,
-            thinking=request_data.thinking
+            thinking=request_data.thinking,
         )
-        if hasattr(provider, 'prepare_request_async'):
+        if hasattr(provider, "prepare_request_async"):
             litellm_request = await provider.prepare_request_async(temp_request)
         else:
             litellm_request = provider.prepare_request(temp_request)
@@ -335,17 +376,17 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             "POST",
             raw_request.url.path,
             display_model,
-            litellm_request.get('model'),
-            len(litellm_request['messages']),
+            litellm_request.get("model"),
+            len(litellm_request["messages"]),
             num_tools,
-            200
+            200,
         )
 
         # Count tokens (run in thread to avoid blocking the event loop)
         token_count = await asyncio.to_thread(
             token_counter,
             messages=litellm_request["messages"],
-            model=litellm_request["model"]
+            model=litellm_request["model"],
         )
 
         return TokenCountResponse(input_tokens=token_count)
@@ -355,6 +396,7 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         return TokenCountResponse(input_tokens=1000)
     except Exception as e:
         import traceback
+
         error_traceback = traceback.format_exc()
         logger.error(f"Error counting tokens: {str(e)}\n{error_traceback}")
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
@@ -367,7 +409,7 @@ async def root():
         "status": "ok",
         "provider": PREFERRED_PROVIDER,
         "big_model": BIG_MODEL,
-        "small_model": SMALL_MODEL
+        "small_model": SMALL_MODEL,
     }
 
 

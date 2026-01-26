@@ -1,4 +1,5 @@
 """Request and response models for the Anthropic API."""
+
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import logging
@@ -19,12 +20,9 @@ OPENAI_MODELS = [
     "gpt-4o-mini",
     "gpt-4o-mini-audio-preview",
     "gpt-4.1",
-    "gpt-4.1-mini"
+    "gpt-4.1-mini",
 ]
-GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.5-pro"
-]
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +64,18 @@ class SystemContent(BaseModel):
 # Message types
 class Message(BaseModel):
     role: Literal["user", "assistant"]
-    content: Union[str, List[
-        Union[ContentBlockText, ContentBlockImage, ContentBlockToolUse,
-             ContentBlockToolResult, ContentBlockThinking]
-    ]]
+    content: Union[
+        str,
+        List[
+            Union[
+                ContentBlockText,
+                ContentBlockImage,
+                ContentBlockToolUse,
+                ContentBlockToolResult,
+                ContentBlockThinking,
+            ]
+        ],
+    ]
     reasoning_content: Optional[str] = None
     thinking_blocks: Optional[List[Dict[str, Any]]] = None
 
@@ -111,7 +117,7 @@ class MessagesRequest(BaseModel):
         BIG_MODEL = big_model
         SMALL_MODEL = small_model
 
-    @field_validator('model')
+    @field_validator("model")
     @classmethod
     def validate_model_field(cls, v, info):
         global PREFERRED_PROVIDER, BIG_MODEL, SMALL_MODEL
@@ -119,26 +125,28 @@ class MessagesRequest(BaseModel):
         original_model = v
         new_model = v
 
-        logger.debug(f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
+        logger.debug(
+            f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
+        )
 
         # Remove provider prefixes for easier matching
         clean_v = v
-        if clean_v.startswith('anthropic/'):
+        if clean_v.startswith("anthropic/"):
             clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
+        elif clean_v.startswith("openai/"):
             clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
+        elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
 
         # Mapping logic
         mapped = False
 
-        if PREFERRED_PROVIDER == "nvidia_nim":
+        if PREFERRED_PROVIDER in ["nvidia_nim", "nvidia_nim_direct"]:
             # NVIDIA NIM: no prefix; haiku/sonnet -> BIG/SMALL_MODEL, else pass-through
-            if 'haiku' in clean_v.lower():
+            if "haiku" in clean_v.lower():
                 new_model = SMALL_MODEL
                 mapped = True
-            elif 'sonnet' in clean_v.lower():
+            elif "sonnet" in clean_v.lower():
                 new_model = BIG_MODEL
                 mapped = True
             else:
@@ -151,7 +159,7 @@ class MessagesRequest(BaseModel):
             mapped = True
 
         # Map Haiku to SMALL_MODEL
-        elif 'haiku' in clean_v.lower():
+        elif "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "gemini" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
@@ -160,7 +168,7 @@ class MessagesRequest(BaseModel):
                 mapped = True
 
         # Map Sonnet to BIG_MODEL
-        elif 'sonnet' in clean_v.lower():
+        elif "sonnet" in clean_v.lower():
             if PREFERRED_PROVIDER == "gemini" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
@@ -170,24 +178,26 @@ class MessagesRequest(BaseModel):
 
         # Add prefixes to non-mapped models (skip for nvidia_nim)
         elif not mapped and PREFERRED_PROVIDER != "nvidia_nim":
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
+            if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
                 mapped = True
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
+            elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
                 mapped = True
 
         if mapped:
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-            if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
+            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+                logger.warning(
+                    f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is."
+                )
             new_model = v
 
         # Store the original model
         values = info.data
         if isinstance(values, dict):
-            values['original_model'] = original_model
+            values["original_model"] = original_model
 
         return new_model
 
@@ -201,7 +211,7 @@ class TokenCountRequest(BaseModel):
     tool_choice: Optional[Dict[str, Any]] = None
     original_model: Optional[str] = None
 
-    @field_validator('model')
+    @field_validator("model")
     @classmethod
     def validate_model_token_count(cls, v, info):
         global PREFERRED_PROVIDER, BIG_MODEL, SMALL_MODEL
@@ -209,32 +219,34 @@ class TokenCountRequest(BaseModel):
         original_model = v
         new_model = v
 
-        logger.debug(f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
+        logger.debug(
+            f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
+        )
 
         # Remove provider prefixes for easier matching
         clean_v = v
-        if clean_v.startswith('anthropic/'):
+        if clean_v.startswith("anthropic/"):
             clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
+        elif clean_v.startswith("openai/"):
             clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
+        elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
 
         # Mapping logic
         mapped = False
 
-        if PREFERRED_PROVIDER == "nvidia_nim":
-            if 'haiku' in clean_v.lower():
+        if PREFERRED_PROVIDER in ["nvidia_nim", "nvidia_nim_direct"]:
+            if "haiku" in clean_v.lower():
                 new_model = SMALL_MODEL
                 mapped = True
-            elif 'sonnet' in clean_v.lower():
+            elif "sonnet" in clean_v.lower():
                 new_model = BIG_MODEL
                 mapped = True
             else:
                 new_model = v
                 mapped = True
 
-        elif 'haiku' in clean_v.lower():
+        elif "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "gemini" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
@@ -242,7 +254,7 @@ class TokenCountRequest(BaseModel):
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        elif 'sonnet' in clean_v.lower():
+        elif "sonnet" in clean_v.lower():
             if PREFERRED_PROVIDER == "gemini" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
@@ -251,23 +263,25 @@ class TokenCountRequest(BaseModel):
                 mapped = True
 
         elif not mapped and PREFERRED_PROVIDER != "nvidia_nim":
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
+            if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
                 mapped = True
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
+            elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
                 mapped = True
 
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-            if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
+            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+                logger.warning(
+                    f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is."
+                )
             new_model = v
 
         values = info.data
         if isinstance(values, dict):
-            values['original_model'] = original_model
+            values["original_model"] = original_model
 
         return new_model
 
@@ -289,7 +303,9 @@ class MessagesResponse(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: List[Union[ContentBlockText, ContentBlockToolUse, ContentBlockThinking]]
     type: Literal["message"] = "message"
-    stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
+    stop_reason: Optional[
+        Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
+    ] = None
     stop_sequence: Optional[str] = None
     usage: Usage
     reasoning_content: Optional[str] = None

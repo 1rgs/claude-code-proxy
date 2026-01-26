@@ -1,78 +1,216 @@
-# Anthropic API Proxy for Gemini & OpenAI Models 🔄
+# Anthropic API Proxy for Gemini & OpenAI Models
 
-**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, or direct Anthropic backends.** 🤝
-
-A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM. 🌉
-
+A proxy server that lets you use Anthropic clients (like Claude Code) with OpenAI, Gemini, NVIDIA NIM, or direct Anthropic backends through a modular provider architecture.
 
 ![Anthropic API Proxy](pic.png)
 
-## Quick Start ⚡
+## Quick Start
 
 ### Prerequisites
 
-- OpenAI API key 🔑
-- Google AI Studio (Gemini) API key (if using Google provider) 🔑
-- Google Cloud Project with Vertex AI API enabled (if using Application Default Credentials for Gemini) ☁️
-- [uv](https://github.com/astral-sh/uv) installed.
+- Python 3.10+
+- API keys for your chosen provider(s)
+- [uv](https://github.com/astral-sh/uv) package manager
 
-### Setup 🛠️
+### Installation
 
-#### From source
-
-1. **Clone this repository**:
-   ```bash
-   git clone https://github.com/1rgs/claude-code-proxy.git
-   cd claude-code-proxy
-   ```
-
-2. **Install uv** (if you haven't already):
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-   *(`uv` will handle dependencies based on `pyproject.toml` when you run the server)*
-
-3. **Configure Environment Variables**:
-   Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-   Edit `.env` and fill in your API keys and model configurations:
-
-   *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
-   *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
-   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
-   *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
-   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
-   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `gemini`, `anthropic`, or `nvidia_nim`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `NVIDIA_NIM_BASE_URL` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, base URL for NVIDIA NIM (default: `https://integrate.api.nvidia.com/v1`).
-   *   `NVIDIA_NIM_API_KEY` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, your NVIDIA API key (e.g. `nvapi-...`).
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-
-   **Mapping Logic:**
-   - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
-   - If `PREFERRED_PROVIDER=gemini`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
-   - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
-   - If `PREFERRED_PROVIDER=nvidia_nim`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` with **no prefix**; the model id is sent as-is to NVIDIA NIM.
-
-4. **Run the server**:
-   ```bash
-   uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
-   ```
-   *(`--reload` is optional, for development)*
-
-#### Docker
-
-If using docker, download the example environment file to `.env` and edit it as described above.
 ```bash
-curl -O .env https://raw.githubusercontent.com/1rgs/claude-code-proxy/refs/heads/main/.env.example
+git clone https://github.com/1rgs/claude-code-proxy.git
+cd claude-code-proxy
 ```
 
-Then, you can either start the container with [docker compose](https://docs.docker.com/compose/) (preferred):
+### Configuration
 
-```yml
+Copy the example environment file and add your API keys:
+
+```bash
+cp .env.example .env
+```
+
+Required variables for common setups:
+
+| Provider | Required Variables |
+|----------|-------------------|
+| OpenAI | `OPENAI_API_KEY` |
+| Gemini | `GEMINI_API_KEY` |
+| NVIDIA NIM | `NVIDIA_NIM_API_KEY` |
+
+### Running the Server
+
+```bash
+uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
+```
+
+### Using with Claude Code
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:8082 claude
+```
+
+## Configuration
+
+### Environment Variables
+
+<details>
+<summary>Click to expand all configuration options</summary>
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PREFERRED_PROVIDER` | Primary backend: `openai`, `gemini`, `anthropic`, `nvidia_nim`, or `nvidia_nim_direct` | `openai` |
+| `BIG_MODEL` | Model mapped from `sonnet` requests | `gpt-4.1` |
+| `SMALL_MODEL` | Model mapped from `haiku` requests | `gpt-4.1-mini` |
+| `OPENAI_API_KEY` | OpenAI API key | - |
+| `ANTHROPIC_API_KEY` | Anthropic API key | - |
+| `GEMINI_API_KEY` | Google AI Studio API key | - |
+| `USE_VERTEX_AUTH` | Use Vertex AI ADC instead of API key | `false` |
+| `VERTEX_PROJECT` | Google Cloud Project ID for Vertex AI | - |
+| `VERTEX_LOCATION` | Vertex AI region (e.g., `us-central1`) | - |
+| `NVIDIA_NIM_BASE_URL` | NVIDIA NIM endpoint | `https://integrate.api.nvidia.com/v1` |
+| `NVIDIA_NIM_API_KEY` | NVIDIA NIM API key | - |
+| `NVIDIA_NIM_RATE_LIMIT` | NIM requests per second rate limit | `40` |
+| `OPENAI_BASE_URL` | Custom OpenAI base URL | - |
+
+Model mappings by provider:
+
+| Provider | Sonnet → | Haiku → | Prefix |
+|----------|----------|---------|--------|
+| `openai` | `BIG_MODEL` | `SMALL_MODEL` | `openai/` |
+| `gemini` | `BIG_MODEL` | `SMALL_MODEL` | `gemini/` |
+| `anthropic` | `sonnet` | `haiku` | `anthropic/` |
+| `nvidia_nim` | `BIG_MODEL` | `SMALL_MODEL | none |
+| `nvidia_nim_direct` | `BIG_MODEL` | `SMALL_MODEL` | none |
+
+</details>
+
+### Example Configurations
+
+<details>
+<summary>Default OpenAI setup</summary>
+
+```dotenv
+OPENAI_API_KEY=sk-...
+# PREFERRED_PROVIDER=openai # Optional, default
+# BIG_MODEL=gpt-4.1
+# SMALL_MODEL=gpt-4.1-mini
+```
+
+</details>
+
+<details>
+<summary>Gemini with API key</summary>
+
+```dotenv
+GEMINI_API_KEY=AIza...
+PREFERRED_PROVIDER=gemini
+BIG_MODEL=gemini-2.5-pro-preview-03-25
+SMALL_MODEL=gemini-2.0-flash
+```
+
+</details>
+
+<details>
+<summary>Gemini with Vertex AI (ADC)</summary>
+
+```dotenv
+PREFERRED_PROVIDER=gemini
+VERTEX_PROJECT=my-gcp-project
+VERTEX_LOCATION=us-central1
+USE_VERTEX_AUTH=true
+```
+
+</details>
+
+<details>
+<summary>Direct Anthropic proxy (just a pass-through)</summary>
+
+```dotenv
+ANTHROPIC_API_KEY=sk-ant-...
+PREFERRED_PROVIDER=anthropic
+```
+
+*Use this for logging/middleware while using real Anthropic models.*
+
+</details>
+
+<details>
+<summary>NVIDIA NIM (via LiteLLM)</summary>
+
+```dotenv
+PREFERRED_PROVIDER=nvidia_nim
+NVIDIA_NIM_API_KEY=nvapi-...
+BIG_MODEL=z.ai/glm4.7
+SMALL_MODEL=z.ai/glm4.7
+```
+
+</details>
+
+<details>
+<summary>NVIDIA NIM Direct (bypasses LiteLLM)</summary>
+
+```dotenv
+PREFERRED_PROVIDER=nvidia_nim_direct
+NVIDIA_NIM_API_KEY=nvapi-...
+BIG_MODEL=z.ai/glm4.7
+SMALL_MODEL=z.ai/glm4.7
+```
+
+*Direct provider offers better control and fixes edge cases with thinking blocks and tool calling.*
+
+</details>
+
+## Features
+
+### Provider Architecture
+
+The proxy uses a modular provider system (`src/providers/`) supporting:
+
+- **OpenAI** - Standard OpenAI API models via LiteLLM
+- **Gemini** - Google AI Studio and Vertex AI via LiteLLM
+- **Anthropic** - Direct Anthropic API pass-through
+- **NVIDIA NIM** - Via LiteLLM (standard provider)
+- **NVIDIA NIM Direct** - Direct HTTP client, bypassing LiteLLM entirely
+
+### Thinking / Reasoning Blocks
+
+For NVIDIA NIM direct provider, pass `extra_body` to enable reasoning:
+
+```json
+{
+  "thinking": {
+    "type": "enabled",
+    "clear_thinking": false
+  }
+}
+```
+
+The proxy streams `reasoning_content` as proper Anthropic `content_block_*` events.
+
+### Tool Calling
+
+All providers support tool calling with proper streaming semantics:
+- Parallel tool calls
+- Tool result formatting
+- Streaming tool responses
+
+### Log Level Control
+
+ Server uses `WARN` level logging by default. Override:
+
+```bash
+uv run uvicorn server:app --log-level debug
+```
+
+## Docker
+
+```bash
+curl -O https://raw.githubusercontent.com/1rgs/claude-code-proxy/refs/heads/main/.env.example .env
+# Edit .env with your configuration
+docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
+```
+
+Or with docker compose:
+
+```yaml
 services:
   proxy:
     image: ghcr.io/1rgs/claude-code-proxy:latest
@@ -82,147 +220,37 @@ services:
       - 8082:8082
 ```
 
-Or with a command:
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /v1/messages` | Create a message (streaming or non-streaming) |
+| `POST /v1/messages/count_tokens` | Count input tokens |
+| `GET /` | Server status including provider and model config |
+| `GET /health` | Health check endpoint |
+
+## Architecture
+
+Request flow:
+
+1. Client sends Anthropic-format request
+2. Provider translates to backend format
+3. Request sent to backend (LiteLLM or direct HTTP)
+4. Response converted back to Anthropic format
+5. Response returned to client
+
+For `nvidia_nim_direct`, LiteLLM is bypassed entirely for better control over streaming and thinking block handling.
+
+## Development
 
 ```bash
-docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Run in development mode
+uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
 ```
 
-### Using with Claude Code 🎮
+## Contributing
 
-1. **Install Claude Code** (if you haven't already):
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-
-2. **Connect to your proxy**:
-   ```bash
-   ANTHROPIC_BASE_URL=http://localhost:8082 claude
-   ```
-
-3. **That's it!** Your Claude Code client will now use the configured backend models (defaulting to Gemini) through the proxy. 🎯
-
-## Model Mapping 🗺️
-
-The proxy automatically maps Claude models to either OpenAI or Gemini models based on the configured model:
-
-| Claude Model | Default Mapping | When BIG_MODEL/SMALL_MODEL is a Gemini model |
-|--------------|--------------|---------------------------|
-| haiku | openai/gpt-4o-mini | gemini/[model-name] |
-| sonnet | openai/gpt-4o | gemini/[model-name] |
-
-### Supported Models
-
-#### OpenAI Models
-The following OpenAI models are supported with automatic `openai/` prefix handling:
-- o3-mini
-- o1
-- o1-mini
-- o1-pro
-- gpt-4.5-preview
-- gpt-4o
-- gpt-4o-audio-preview
-- chatgpt-4o-latest
-- gpt-4o-mini
-- gpt-4o-mini-audio-preview
-- gpt-4.1
-- gpt-4.1-mini
-
-#### Gemini Models
-The following Gemini models are supported with automatic `gemini/` prefix handling:
-- gemini-2.5-pro
-- gemini-2.5-flash
-
-### Model Prefix Handling
-The proxy automatically adds the appropriate prefix to model names:
-- OpenAI models get the `openai/` prefix
-- Gemini models get the `gemini/` prefix
-- The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
-
-For example:
-- `gpt-4o` becomes `openai/gpt-4o`
-- `gemini-2.5-pro-preview-03-25` becomes `gemini/gemini-2.5-pro-preview-03-25`
-- When BIG_MODEL is set to a Gemini model, Claude Sonnet will map to `gemini/[model-name]`
-
-### Customizing Model Mapping
-
-Control the mapping using environment variables in your `.env` file or directly:
-
-**Example 1: Default (Use OpenAI)**
-No changes needed in `.env` beyond API keys, or ensure:
-```dotenv
-OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=gemini
-# PREFERRED_PROVIDER="openai" # Optional, it's the default
-# BIG_MODEL="gpt-4.1" # Optional, it's the default
-# SMALL_MODEL="gpt-4.1-mini" # Optional, it's the default
-```
-
-**Example 2a: Prefer Google (using GEMINI_API_KEY)**
-```dotenv
-GEMINI_API_KEY="your-google-key"
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
-PREFERRED_PROVIDER="google"
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
-```
-
-**Example 2b: Prefer Google (using Vertex AI with Application Default Credentials)**
-```dotenv
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
-PREFERRED_PROVIDER="google"
-VERTEX_PROJECT="your-gcp-project-id"
-VERTEX_LOCATION="us-central1"
-USE_VERTEX_AUTH=true
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
-```
-
-**Example 3: Use Direct Anthropic ("Just an Anthropic Proxy" Mode)**
-```dotenv
-ANTHROPIC_API_KEY="sk-ant-..."
-PREFERRED_PROVIDER="anthropic"
-# BIG_MODEL and SMALL_MODEL are ignored in this mode
-# haiku/sonnet requests are passed directly to Anthropic models
-```
-
-*Use case: This mode enables you to use the proxy infrastructure (for logging, middleware, request/response processing, etc.) while still using actual Anthropic models rather than being forced to remap to OpenAI or Gemini.*
-
-**Example 4: Use Specific OpenAI Models**
-```dotenv
-OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key"
-PREFERRED_PROVIDER="openai"
-BIG_MODEL="gpt-4o" # Example specific model
-SMALL_MODEL="gpt-4o-mini" # Example specific model
-```
-
-**Example 5: NVIDIA NIM (no model prefix)**
-```dotenv
-PREFERRED_PROVIDER="nvidia_nim"
-NVIDIA_NIM_BASE_URL="https://integrate.api.nvidia.com/v1"
-NVIDIA_NIM_API_KEY="nvapi-your-key"
-BIG_MODEL="z.ai/glm4.7"
-SMALL_MODEL="z.ai/glm4.7"
-```
-
-*Use case: With `PREFERRED_PROVIDER=nvidia_nim`, the proxy does **not** add `openai/`, `gemini/`, or `anthropic/` to model names. The model id (e.g. `z.ai/glm4.7`) is sent as-is to NVIDIA NIM at `integrate.api.nvidia.com`. Use this when backing Claude Code with NVIDIA NIM models.*
-
-- **Tool results with nvidia_nim**: Tool results are sent as `role: "tool"` messages (OpenAI-style) instead of a single `role: "user"` message with concatenated tool output. Assistant messages with `tool_use` are converted to `content` + `tool_calls` for the backend.
-- **extra_body**: You can pass `extra_body` on the request (e.g. `{"thinking": {"type": "enabled", "clear_thinking": false}}` for z.ai/GLM or `{"reasoning_budget": 16384, "chat_template_kwargs": {"enable_thinking": true}}` for NIM) to enable reasoning/thinking; it is forwarded to LiteLLM and the backend. The proxy streams `reasoning_content` as `content_block_start`/`content_block_delta`/`content_block_stop` for `type: "thinking"` and `thinking_delta`, and includes `reasoning_content` and a thinking block in non-streaming responses.
-
-## How It Works 🧩
-
-This proxy works by:
-
-1. **Receiving requests** in Anthropic's API format 📥
-2. **Translating** the requests to OpenAI format via LiteLLM 🔄
-3. **Sending** the translated request to OpenAI 📤
-4. **Converting** the response back to Anthropic format 🔄
-5. **Returning** the formatted response to the client ✅
-
-The proxy handles both streaming and non-streaming responses, maintaining compatibility with all Claude clients. 🌊
-
-## Contributing 🤝
-
-Contributions are welcome! Please feel free to submit a Pull Request. 🎁
+Contributions are welcome! Please feel free to submit a Pull Request.

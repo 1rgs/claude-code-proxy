@@ -37,3 +37,4 @@ ENV/
 .vscode/
 *.swp
 *.swo
+.venv

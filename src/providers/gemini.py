@@ -238,12 +238,14 @@ class GeminiProvider(BaseProvider):
         # Track state
         message_delta = {"stop_reason": None, "usage": None}
         accumulated_text = ""
+        current_text_index = 0  # Track actual text block index
         text_block_closed = False
         tool_calls_started = False
         next_block_index = 1
-        current_tool_index = None
-        current_tool_id = None
-        current_tool_content = ""
+        # Track multiple tool calls by their index
+        tool_index_to_block = {}  # tool index -> our block index
+        tool_index_to_id = {}  # tool index -> tool_id
+        tool_index_to_content = {}  # tool index -> accumulated arguments
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -280,7 +282,7 @@ class GeminiProvider(BaseProvider):
                 if not tool_calls_started:
                     # Close text block first
                     if not text_block_closed:
-                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                         text_block_closed = True
                     tool_calls_started = True
 
@@ -288,40 +290,46 @@ class GeminiProvider(BaseProvider):
                     delta_tool_calls = [delta_tool_calls]
 
                 for tool_call in delta_tool_calls:
+                    # Extract tool call data - use 'index' to identify which tool
                     if isinstance(tool_call, dict):
+                        tc_index = tool_call.get('index', 0)
                         function = tool_call.get('function', {})
                         tool_id = tool_call.get('id')
-                        name = function.get('name')
-                        arguments = function.get('arguments')
+                        name = function.get('name') if function else None
+                        arguments = function.get('arguments') if function else None
                     else:
+                        tc_index = getattr(tool_call, 'index', 0)
                         function = getattr(tool_call, 'function', None)
                         tool_id = getattr(tool_call, 'id', None)
                         name = getattr(function, 'name', None) if function else None
                         arguments = getattr(function, 'arguments', None) if function else None
 
                     # New tool - emit content_block_start
-                    if tool_id and tool_id != current_tool_id:
-                        if current_tool_id:
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+                    if tc_index not in tool_index_to_block:
+                        # Generate ID if not provided
+                        if not tool_id:
+                            tool_id = f"tool_{uuid.uuid4()}"
+                        tool_index_to_id[tc_index] = tool_id
+                        tool_index_to_block[tc_index] = next_block_index
+                        tool_index_to_content[tc_index] = ""
                         yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name or '', 'input': {}}})}\n\n"
-                        current_tool_id = tool_id
-                        current_tool_content = ""
-                        current_tool_index = next_block_index
                         next_block_index += 1
 
                     # Emit tool arguments
                     if arguments:
-                        current_tool_content += arguments if isinstance(arguments, str) else str(arguments)
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_tool_index, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
+                        block_idx = tool_index_to_block[tc_index]
+                        tool_index_to_content[tc_index] += arguments if isinstance(arguments, str) else str(arguments)
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
 
             # Process text content (skip when tool_calls started)
             if delta_content and delta_content != "" and not tool_calls_started:
                 if text_block_closed:
                     yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    current_text_index = next_block_index
                     next_block_index += 1
                     text_block_closed = False
                 accumulated_text += delta_content
-                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
 
             # Handle finish_reason
             if finish_reason and not message_delta["stop_reason"]:
@@ -334,12 +342,13 @@ class GeminiProvider(BaseProvider):
                 }
                 stop_reason = stop_reason_map.get(finish_reason, "end_turn")
 
-                # Close any open blocks
-                if tool_calls_started and current_tool_id:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+                # Close any open tool blocks
+                for tc_index, block_idx in tool_index_to_block.items():
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
 
+                # Close text block if still open
                 if not text_block_closed and not tool_calls_started:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                     text_block_closed = True
 
                 yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': None})}\n\n"
@@ -349,10 +358,12 @@ class GeminiProvider(BaseProvider):
 
         # If we didn't get a finish_reason, close the response
         if not message_delta["stop_reason"]:
-            if tool_calls_started and current_tool_id:
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+            # Close any open tool blocks
+            for tc_index, block_idx in tool_index_to_block.items():
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
+            # Close text block if still open
             if not text_block_closed and not tool_calls_started:
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
             yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
             yield "[DONE]\n"

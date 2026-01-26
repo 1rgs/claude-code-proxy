@@ -15,7 +15,7 @@ import sys
 import uvicorn
 from dotenv import load_dotenv
 import litellm
-from typing import List, Dict, Any, Optional, Union, AsyncIterator
+from typing import Dict, Any
 from contextlib import asynccontextmanager
 
 # Load environment variables

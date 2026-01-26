@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 import re
 from datetime import datetime
 import sys
+from collections import deque
+import threading
 
 # Load environment variables from .env file
 load_dotenv()
@@ -96,14 +98,20 @@ OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 NVIDIA_NIM_BASE_URL = os.environ.get("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
 NVIDIA_NIM_API_KEY = os.environ.get("NVIDIA_NIM_API_KEY")
 
+# NVIDIA NIM Rate Limiting: 40 requests per minute
+NVIDIA_NIM_RATE_LIMIT = 40
+NVIDIA_NIM_RATE_WINDOW = 60  # seconds
+NVIDIA_NIM_RATE_LOCK = threading.Condition()  # Use Condition for proper wait/notify
+NVIDIA_NIM_REQUEST_TIMESTAMPS = deque()  # Tracks timestamps of all NIM requests
+
 # Get preferred provider (default to openai). Also supports: google, anthropic, nvidia_nim
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment.
 # For nvidia_nim: defaults to z.ai/glm4.7 (valid NIM model id); for others, OpenAI-style defaults.
 if PREFERRED_PROVIDER == "nvidia_nim":
-    BIG_MODEL = os.environ.get("BIG_MODEL", "z.ai/glm4.7")
-    SMALL_MODEL = os.environ.get("SMALL_MODEL", "z.ai/glm4.7")
+    BIG_MODEL = os.environ.get("BIG_MODEL", "z-ai/glm4.7")
+    SMALL_MODEL = os.environ.get("SMALL_MODEL", "z-ai/glm4.7")
 else:
     BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
     SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
@@ -152,6 +160,50 @@ def clean_gemini_schema(schema: Any) -> Any:
         # Recursively clean items in a list
         return [clean_gemini_schema(item) for item in schema]
     return schema
+
+
+def wait_for_nvidia_nim_rate_limit():
+    """Enforce NVIDIA NIM rate limit: 40 requests per minute.
+
+    This tracks ALL requests to NVIDIA NIM endpoint including:
+    - Main completion requests
+    - Streaming completion requests
+    - Tool calls (each tool invocation is a separate request)
+    - Token counting requests
+
+    Uses a sliding window with threading.Condition for thread-safe waiting.
+    """
+    now = time.time()
+
+    with NVIDIA_NIM_RATE_LOCK:
+        # Remove timestamps older than the rate window (60 seconds)
+        while NVIDIA_NIM_REQUEST_TIMESTAMPS and now - NVIDIA_NIM_REQUEST_TIMESTAMPS[0] > NVIDIA_NIM_RATE_WINDOW:
+            NVIDIA_NIM_REQUEST_TIMESTAMPS.popleft()
+
+        # Wait if we've hit the rate limit (use while loop to handle spurious wakeups)
+        while len(NVIDIA_NIM_REQUEST_TIMESTAMPS) >= NVIDIA_NIM_RATE_LIMIT:
+            # Calculate how long to wait until the oldest request expires
+            oldest_timestamp = NVIDIA_NIM_REQUEST_TIMESTAMPS[0]
+            wait_time = oldest_timestamp + NVIDIA_NIM_RATE_WINDOW - now
+
+            if wait_time <= 0:
+                # The oldest request has already expired, break and retry
+                break
+
+            logger.debug(f"NVIDIA NIM rate limit reached ({NVIDIA_NIM_RATE_LIMIT}/min). Waiting for {wait_time:.2f}s")
+
+            # Condition.wait() releases the lock, waits, then reacquires on wake
+            # This is thread-safe and allows other operations to proceed
+            NVIDIA_NIM_RATE_LOCK.wait(wait_time)
+
+            # After waking, refresh time and clean up expired timestamps
+            now = time.time()
+            while NVIDIA_NIM_REQUEST_TIMESTAMPS and now - NVIDIA_NIM_REQUEST_TIMESTAMPS[0] > NVIDIA_NIM_RATE_WINDOW:
+                NVIDIA_NIM_REQUEST_TIMESTAMPS.popleft()
+
+        # Record this request timestamp
+        NVIDIA_NIM_REQUEST_TIMESTAMPS.append(now)
+        logger.debug(f"NVIDIA NIM request recorded. Count: {len(NVIDIA_NIM_REQUEST_TIMESTAMPS)}/{NVIDIA_NIM_RATE_LIMIT}")
 
 # Models for Anthropic API requests
 class ContentBlockText(BaseModel):
@@ -1435,14 +1487,19 @@ async def create_message(
             num_tools = len(request.tools) if request.tools else 0
             
             log_request_beautifully(
-                "POST", 
-                raw_request.url.path, 
-                display_model, 
+                "POST",
+                raw_request.url.path,
+                display_model,
                 litellm_request.get('model'),
                 len(litellm_request['messages']),
                 num_tools,
                 200  # Assuming success at this point
             )
+
+            # NVIDIA NIM rate limiting - check before API call
+            if PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("openai/", "gemini/", "anthropic/")):
+                wait_for_nvidia_nim_rate_limit()
+
             # Ensure we use the async version for streaming
             response_generator = await litellm.acompletion(**litellm_request)
             
@@ -1455,14 +1512,19 @@ async def create_message(
             num_tools = len(request.tools) if request.tools else 0
             
             log_request_beautifully(
-                "POST", 
-                raw_request.url.path, 
-                display_model, 
+                "POST",
+                raw_request.url.path,
+                display_model,
                 litellm_request.get('model'),
                 len(litellm_request['messages']),
                 num_tools,
                 200  # Assuming success at this point
             )
+
+            # NVIDIA NIM rate limiting - check before API call
+            if PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("openai/", "gemini/", "anthropic/")):
+                wait_for_nvidia_nim_rate_limit()
+
             start_time = time.time()
             litellm_response = litellm.completion(**litellm_request)
             logger.debug(f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s")
@@ -1587,6 +1649,8 @@ async def count_tokens(
             # NVIDIA NIM: use nvidia_nim/ prefix so LiteLLM picks the right encoding
             if PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("openai/", "gemini/", "anthropic/")):
                 token_counter_args["model"] = "nvidia_nim/" + converted_request["model"]
+                # NVIDIA NIM rate limiting - check before API call
+                wait_for_nvidia_nim_rate_limit()
 
             # Count tokens
             token_count = token_counter(**token_counter_args)

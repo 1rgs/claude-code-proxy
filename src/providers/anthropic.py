@@ -83,11 +83,6 @@ class AnthropicProvider(BaseProvider):
 
         content = []
 
-        # Check for reasoning_content field (thinking blocks from some providers)
-        reasoning_content = message.get("reasoning_content") or message.get("reasoning")
-        if reasoning_content:
-            content.append({"type": "thinking", "thinking": reasoning_content})
-
         # Check if content is already a list of content blocks
         if isinstance(content_list, list) and content_list:
             # Already in Anthropic format, use as-is
@@ -172,7 +167,7 @@ class AnthropicProvider(BaseProvider):
         )
 
     async def stream_response(self, litellm_generator: AsyncIterator) -> AsyncIterator[str]:
-        """Stream in Anthropic SSE format with thinking block support."""
+        """Stream in Anthropic SSE format."""
         import json
         import uuid
 
@@ -180,23 +175,17 @@ class AnthropicProvider(BaseProvider):
         message_id = f"msg_{uuid.uuid4()}"
         yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant'}})}\n\n"
 
-        # Track state - don't start any block until we know what type of content we're getting
+        # Send text block start
+        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+
+        # Track state
         message_delta = {"stop_reason": None, "usage": None}
         accumulated_text = ""
-        accumulated_thinking = ""
-        next_block_index = 0
-
-        # Thinking block state
-        thinking_block_started = False
-        thinking_index = -1
-
-        # Text block state
-        text_block_started = False
-        text_block_closed = True
-        current_text_index = -1
-
-        # Tool calls state
+        current_text_index = 0
+        text_block_closed = False
         tool_calls_started = False
+        next_block_index = 1
+        # Track multiple tool calls by their index
         tool_index_to_block = {}  # tool index -> our block index
         tool_index_to_id = {}  # tool index -> tool_id
         tool_index_to_content = {}  # tool index -> accumulated arguments
@@ -216,102 +205,27 @@ class AnthropicProvider(BaseProvider):
                 delta = choice.get('delta', {})
                 finish_reason = choice.get('finish_reason')
 
-            # Extract delta content, reasoning, and tool_calls
+            # Extract delta content
             delta_content = None
-            delta_reasoning = None
             delta_tool_calls = None
 
             if delta:
-                # Get raw content (could be string or structured list)
-                raw_content = delta.content if hasattr(delta, 'content') else (delta.get('content') if isinstance(delta, dict) else None)
+                if hasattr(delta, 'content'):
+                    delta_content = delta.content
+                elif isinstance(delta, dict):
+                    delta_content = delta.get('content')
 
-                # Handle structured content (list of typed blocks)
-                if isinstance(raw_content, list):
-                    for part in raw_content:
-                        if isinstance(part, dict):
-                            ptype = part.get('type') or part.get('role')
-                            ptext = part.get('text') or part.get('thinking') or part.get('content') or ''
-                        else:
-                            ptype = getattr(part, 'type', None) or getattr(part, 'role', None)
-                            ptext = getattr(part, 'text', None) or getattr(part, 'thinking', None) or getattr(part, 'content', None) or ''
-
-                        if not ptext:
-                            continue
-
-                        if ptype in ('thinking', 'reasoning'):
-                            # Handle thinking content
-                            if not thinking_block_started:
-                                # Close text block if open
-                                if text_block_started and not text_block_closed:
-                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                                    text_block_closed = True
-                                # Start thinking block
-                                thinking_index = next_block_index
-                                next_block_index += 1
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
-                                thinking_block_started = True
-                            accumulated_thinking += ptext
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': ptext}})}\n\n"
-                        elif ptype in ('text', 'output'):
-                            # Handle text content
-                            if thinking_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                                thinking_block_started = False
-                            if text_block_closed:
-                                current_text_index = next_block_index
-                                next_block_index += 1
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                                text_block_started = True
-                                text_block_closed = False
-                            accumulated_text += ptext
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': ptext}})}\n\n"
-                    # Continue to next chunk after processing structured content
-                    if finish_reason:
-                        pass  # Will be handled below
-                    else:
-                        continue
-                else:
-                    # Scalar content
-                    delta_content = raw_content if isinstance(raw_content, str) else None
-
-                # Check for reasoning_content field (used by some models/providers)
-                delta_reasoning = (
-                    getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
-                    if not isinstance(delta, dict)
-                    else (delta.get('reasoning_content') or delta.get('reasoning'))
-                )
-
-                # Get tool calls
                 if hasattr(delta, 'tool_calls'):
                     delta_tool_calls = delta.tool_calls
                 elif isinstance(delta, dict):
                     delta_tool_calls = delta.get('tool_calls')
 
-            # Handle reasoning_content (scalar)
-            if delta_reasoning and not tool_calls_started:
-                if not thinking_block_started:
-                    # Close text block if open
-                    if text_block_started and not text_block_closed:
-                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                        text_block_closed = True
-                    # Start thinking block
-                    thinking_index = next_block_index
-                    next_block_index += 1
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
-                    thinking_block_started = True
-                accumulated_thinking += delta_reasoning
-                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
-
             # Handle tool calls
             if delta_tool_calls:
                 if not tool_calls_started:
-                    # Close thinking block if open
-                    if thinking_block_started:
-                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                        thinking_block_started = False
-                    # Close text block if open
-                    if text_block_started and not text_block_closed:
-                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                    # Close text block
+                    if not text_block_closed:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
                         text_block_closed = True
                     tool_calls_started = True
 
@@ -333,10 +247,6 @@ class AnthropicProvider(BaseProvider):
                         name = getattr(function, 'name', None) if function else None
                         arguments = getattr(function, 'arguments', None) if function else None
 
-                    # Handle negative index (some providers return -1)
-                    if tc_index < 0:
-                        tc_index = len(tool_index_to_block)
-
                     # New tool - emit content_block_start
                     if tc_index not in tool_index_to_block:
                         # Generate ID if not provided
@@ -354,18 +264,12 @@ class AnthropicProvider(BaseProvider):
                         tool_index_to_content[tc_index] += arguments if isinstance(arguments, str) else str(arguments)
                         yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
 
-            # Process text content (scalar)
+            # Process text content
             if delta_content and delta_content != "" and not tool_calls_started:
-                # Close thinking block if open before starting text
-                if thinking_block_started:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                    thinking_block_started = False
-
                 if text_block_closed:
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                     current_text_index = next_block_index
                     next_block_index += 1
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                    text_block_started = True
                     text_block_closed = False
                 accumulated_text += delta_content
                 yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
@@ -381,16 +285,12 @@ class AnthropicProvider(BaseProvider):
                 }
                 stop_reason = stop_reason_map.get(finish_reason, "end_turn")
 
-                # Close thinking block if still open
-                if thinking_block_started:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-
                 # Close any open tool blocks
                 for tc_index, block_idx in tool_index_to_block.items():
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
 
                 # Close text block if still open
-                if text_block_started and not text_block_closed:
+                if not text_block_closed and not tool_calls_started:
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                     text_block_closed = True
 
@@ -401,19 +301,12 @@ class AnthropicProvider(BaseProvider):
 
         # If we didn't get a finish_reason, close the response
         if not message_delta["stop_reason"]:
-            # Close thinking block if still open
-            if thinking_block_started:
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
             # Close any open tool blocks
             for tc_index, block_idx in tool_index_to_block.items():
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
             # Close text block if still open
-            if text_block_started and not text_block_closed:
+            if not text_block_closed and not tool_calls_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-            # If no blocks were started at all, emit an empty text block
-            if next_block_index == 0:
-                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
             yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
             yield "[DONE]\n"

@@ -35,6 +35,16 @@ PROXY_API_URL = "http://localhost:8082/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MODEL = "claude-3-sonnet-20240229"  # Change to your preferred model
 
+# Provider-specific configurations
+PROVIDER_CONFIG = {
+    "nvidia_nim_direct": {
+        "model": "sonnet",  # Will map to BIG_MODEL via the proxy
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "temperature": 0.7,
+        "top_p": 0.9,
+    }
+}
+
 # Headers
 anthropic_headers = {
     "x-api-key": ANTHROPIC_API_KEY,
@@ -181,6 +191,92 @@ TEST_SCENARIOS = {
         ],
         "tools": [calculator_tool],
         "tool_choice": {"type": "auto"}
+    },
+
+    # ================= NVIDIA NIM DIRECT TESTS =================
+
+    # Simple NVIDIA NIM Direct test
+    "nvidia_nim_direct_simple": {
+        "model": "sonnet",  # Will map through proxy
+        "max_tokens": 300,
+        "messages": [
+            {"role": "user", "content": "Explain what is meant by 'machine learning' in 2-3 sentences."}
+        ]
+    },
+
+    # NVIDIA NIM Direct with extended thinking
+    "nvidia_nim_direct_thinking": {
+        "model": "sonnet",
+        "max_tokens": 500,
+        "thinking": {
+            "type": "enabled",
+            "budget_tokens": 1024
+        },
+        "system": "You are a helpful assistant that thinks carefully before answering.",
+        "messages": [
+            {"role": "user", "content": "I need to solve this problem: A store sells apples at $2 each and oranges at $1.50 each. If I buy 3 apples and 4 oranges, and I have a 10% discount coupon, how much do I pay?"}
+        ]
+    },
+
+    # NVIDIA NIM Direct with tools
+    "nvidia_nim_direct_tools": {
+        "model": "sonnet",
+        "max_tokens": 400,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "messages": [
+            {"role": "user", "content": "Calculate 285 divided by 3, then multiply by 7.5."}
+        ],
+        "tools": [calculator_tool],
+        "tool_choice": {"type": "auto"}
+    },
+
+    # NVIDIA NIM Direct streaming test
+    "nvidia_nim_direct_stream": {
+        "model": "sonnet",
+        "max_tokens": 200,
+        "stream": True,
+        "messages": [
+            {"role": "user", "content": "List the first 3 states in alphabetical order of the United States, one per line."}
+        ]
+    },
+
+    # NVIDIA NIM Direct streaming with tools
+    "nvidia_nim_direct_tools_stream": {
+        "model": "sonnet",
+        "max_tokens": 300,
+        "stream": True,
+        "messages": [
+            {"role": "user", "content": "What is 15 times 18, then add 27?"}
+        ],
+        "tools": [calculator_tool],
+        "tool_choice": {"type": "auto"}
+    },
+
+    # NVIDIA NIM Direct multi-turn conversation
+    "nvidia_nim_direct_multi_turn": {
+        "model": "sonnet",
+        "max_tokens": 400,
+        "messages": [
+            {"role": "user", "content": "Can you help me with some math? What is 12 squared?"},
+            {"role": "assistant", "content": "12 squared is 12 × 12 = 144."},
+            {"role": "user", "content": "Now add 56 to that result."}
+        ],
+        "tools": [calculator_tool],
+        "tool_choice": {"type": "auto"}
+    },
+
+    # NVIDIA NIM Direct with content blocks (mixed text and images placeholder)
+    "nvidia_nim_direct_content_blocks": {
+        "model": "sonnet",
+        "max_tokens": 400,
+        "messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "I have two questions: First, what is the capital of France? Second, calculate 95 times 8."}
+            ]}
+        ],
+        "tools": [calculator_tool],
+        "tool_choice": {"type": "auto"}
     }
 }
 
@@ -315,29 +411,57 @@ def compare_responses(anthropic_response, proxy_response, check_tools=False):
     # but should have roughly similar content
     return True  # We're not enforcing similarity, just basic structure
 
-def test_request(test_name, request_data, check_tools=False):
-    """Run a test with the given request data."""
+def test_request(test_name, request_data, check_tools=False, proxy_only: bool = False):
+    """Run a test with the given request data.
+
+    Args:
+        test_name: Name of the test
+        request_data: Request payload
+        check_tools: Whether to validate tool use
+        proxy_only: If True, only test the proxy (skip Anthropic API)
+    """
     print(f"\n{'='*20} RUNNING TEST: {test_name} {'='*20}")
-    
+
     # Log the request data
     print(f"\nRequest data:\n{json.dumps({k: v for k, v in request_data.items() if k != 'messages'}, indent=2)}")
-    
+
     # Make copies of the request data to avoid modifying the original
     anthropic_data = request_data.copy()
     proxy_data = request_data.copy()
-    
+
     try:
-        # Send requests to both APIs
+        # proxy_only tests - only hit the proxy
+        if proxy_only:
+            print("\nSending to Proxy (only)...")
+            proxy_response = get_response(PROXY_API_URL, proxy_headers, proxy_data)
+
+            print(f"\nProxy status code: {proxy_response.status_code}")
+
+            if proxy_response.status_code != 200:
+                print(f"\n❌ Proxy request failed")
+                print(f"Proxy error: {proxy_response.text}")
+                return False
+
+            # Validate proxy response only
+            result = validate_proxy_response(proxy_response, check_tools=check_tools)
+            if result:
+                print(f"\n✅ Test {test_name} passed!")
+                return True
+            else:
+                print(f"\n❌ Test {test_name} failed!")
+                return False
+
+        # Standard tests - compare proxy to Anthropic
         print("\nSending to Anthropic API...")
         anthropic_response = get_response(ANTHROPIC_API_URL, anthropic_headers, anthropic_data)
-        
+
         print("\nSending to Proxy...")
         proxy_response = get_response(PROXY_API_URL, proxy_headers, proxy_data)
-        
+
         # Check response codes
         print(f"\nAnthropic status code: {anthropic_response.status_code}")
         print(f"Proxy status code: {proxy_response.status_code}")
-        
+
         if anthropic_response.status_code != 200 or proxy_response.status_code != 200:
             print("\n⚠️ One or both requests failed")
             if anthropic_response.status_code != 200:
@@ -345,7 +469,7 @@ def test_request(test_name, request_data, check_tools=False):
             if proxy_response.status_code != 200:
                 print(f"Proxy error: {proxy_response.text}")
             return False
-        
+
         # Compare the responses
         result = compare_responses(anthropic_response, proxy_response, check_tools=check_tools)
         if result:
@@ -354,12 +478,89 @@ def test_request(test_name, request_data, check_tools=False):
         else:
             print(f"\n❌ Test {test_name} failed!")
             return False
-    
+
     except Exception as e:
         print(f"\n❌ Error in test {test_name}: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
+
+def validate_proxy_response(proxy_response, check_tools=False):
+    """Validate that the proxy response has the correct structure, without comparing to Anthropic.
+
+    Args:
+        proxy_response: Response from the proxy
+        check_tools: Whether to validate tool use
+
+    Returns:
+        bool: True if valid, False otherwise
+    """
+    proxy_json = proxy_response.json()
+
+    print("\n--- Proxy Response Structure ---")
+    print(json.dumps({k: v for k, v in proxy_json.items() if k != "content"}, indent=2))
+
+    # Basic structure verification
+    assert proxy_json.get("role") == "assistant", "Proxy role is not 'assistant'"
+    assert proxy_json.get("type") == "message", "Proxy type is not 'message'"
+
+    # Check if stop_reason is reasonable
+    valid_stop_reasons = ["end_turn", "max_tokens", "stop_sequence", "tool_use", None]
+    assert proxy_json.get("stop_reason") in valid_stop_reasons, "Invalid stop reason"
+
+    # Check content exists and has valid structure
+    assert "content" in proxy_json, "No content in Proxy response"
+
+    proxy_content = proxy_json["content"]
+
+    # Make sure content is a list and has at least one item
+    assert isinstance(proxy_content, list), "Proxy content is not a list"
+    assert len(proxy_content) > 0, "Proxy content is empty"
+
+    # If we're checking for tool uses
+    if check_tools:
+        # Find tool use in Proxy response
+        proxy_tool = None
+        for item in proxy_content:
+            if item.get("type") == "tool_use":
+                proxy_tool = item
+                break
+
+        if proxy_tool is not None:
+            print("\n---------- PROXY TOOL USE ----------")
+            print(json.dumps(proxy_tool, indent=2))
+
+            # Check tool structure
+            assert proxy_tool.get("name") is not None, "Proxy tool has no name"
+            assert proxy_tool.get("input") is not None, "Proxy tool has no input"
+
+            print("\n✅ Proxy response contains tool use")
+        else:
+            print("\n⚠️ Proxy response does not contain tool use")
+
+    # Check if content has text
+    proxy_text = None
+    for item in proxy_content:
+        if item.get("type") == "text":
+            proxy_text = item.get("text")
+            break
+
+    # For tool use responses, there might not be text content
+    if check_tools and proxy_text is None:
+        print("\n⚠️ Proxy response doesn't have text content (expected for tool-only responses)")
+        return True
+
+    assert proxy_text is not None, "No text found in Proxy response"
+
+    # Print the first few lines of the text response
+    max_preview_lines = 5
+    proxy_preview = "\n".join(proxy_text.strip().split("\n")[:max_preview_lines])
+
+    print("\n---------- PROXY TEXT PREVIEW ----------")
+    print(proxy_preview)
+
+    print("\n✅ Proxy response structure is valid")
+    return True
 
 # ================= STREAMING TESTS =================
 
@@ -565,41 +766,82 @@ def compare_stream_stats(anthropic_stats, proxy_stats):
     return (not proxy_stats.has_error and 
             len(proxy_stats.text_content) > 0 or proxy_stats.has_tool_use)
 
-async def test_streaming(test_name, request_data):
-    """Run a streaming test with the given request data."""
+async def test_streaming(test_name, request_data, proxy_only: bool = False):
+    """Run a streaming test with the given request data.
+
+    Args:
+        test_name: Name of the test
+        request_data: Request payload
+        proxy_only: If True, only test the proxy (skip Anthropic API)
+    """
     print(f"\n{'='*20} RUNNING STREAMING TEST: {test_name} {'='*20}")
-    
+
     # Log the request data
     print(f"\nRequest data:\n{json.dumps({k: v for k, v in request_data.items() if k != 'messages'}, indent=2)}")
-    
+
     # Make copies of the request data to avoid modifying the original
     anthropic_data = request_data.copy()
     proxy_data = request_data.copy()
-    
+
     if not anthropic_data.get("stream"):
         anthropic_data["stream"] = True
     if not proxy_data.get("stream"):
         proxy_data["stream"] = True
-    
+
     check_tools = "tools" in request_data
-    
+
     try:
-        # Send streaming requests
+        # proxy_only tests - only hit the proxy
+        if proxy_only:
+            print("\nSending to Proxy (only)...")
+            proxy_stats, proxy_error = await stream_response(
+                PROXY_API_URL, proxy_headers, proxy_data, "Proxy"
+            )
+
+            # Print statistics
+            print("\n--- Proxy Stream Statistics ---")
+            proxy_stats.summarize()
+
+            # Check for errors
+            if proxy_error:
+                print(f"\n❌ Test {test_name} failed! Proxy had an error: {proxy_error}")
+                return False
+
+            # Validate the proxy has content
+            if proxy_stats.total_chunks == 0:
+                print(f"\n❌ Test {test_name} failed! No chunks received from proxy")
+                return False
+
+            # Validate required events
+            proxy_missing = REQUIRED_EVENT_TYPES - proxy_stats.event_types
+            if proxy_missing:
+                print(f"⚠️ Proxy is missing required event types: {proxy_missing}")
+            else:
+                print("✅ Proxy has all required event types")
+
+            if proxy_stats.text_content or proxy_stats.has_tool_use:
+                print(f"\n✅ Test {test_name} passed!")
+                return True
+            else:
+                print(f"\n❌ Test {test_name} failed! No content received from proxy")
+                return False
+
+        # Standard tests - compare proxy to Anthropic
         anthropic_stats, anthropic_error = await stream_response(
             ANTHROPIC_API_URL, anthropic_headers, anthropic_data, "Anthropic"
         )
-        
+
         proxy_stats, proxy_error = await stream_response(
             PROXY_API_URL, proxy_headers, proxy_data, "Proxy"
         )
-        
+
         # Print statistics
         print("\n--- Anthropic Stream Statistics ---")
         anthropic_stats.summarize()
-        
+
         print("\n--- Proxy Stream Statistics ---")
         proxy_stats.summarize()
-        
+
         # Compare the responses
         if anthropic_error:
             print(f"\n⚠️ Anthropic stream had an error: {anthropic_error}")
@@ -610,11 +852,11 @@ async def test_streaming(test_name, request_data):
             else:
                 print(f"\n❌ Test {test_name} failed! Both streams had errors.")
                 return False
-        
+
         if proxy_error:
             print(f"\n❌ Test {test_name} failed! Proxy had an error: {proxy_error}")
             return False
-        
+
         result = compare_stream_stats(anthropic_stats, proxy_stats)
         if result:
             print(f"\n✅ Test {test_name} passed!")
@@ -622,7 +864,7 @@ async def test_streaming(test_name, request_data):
         else:
             print(f"\n❌ Test {test_name} failed!")
             return False
-    
+
     except Exception as e:
         print(f"\n❌ Error in test {test_name}: {str(e)}")
         import traceback
@@ -635,7 +877,7 @@ async def run_tests(args):
     """Run all tests based on command-line arguments."""
     # Track test results
     results = {}
-    
+
     # First run non-streaming tests
     if not args.streaming_only:
         print("\n\n=========== RUNNING NON-STREAMING TESTS ===========\n")
@@ -643,20 +885,29 @@ async def run_tests(args):
             # Skip streaming tests
             if test_data.get("stream"):
                 continue
-                
+
+            # Skip non-NVIDIA tests if nvidia_direct
+            if args.nvidia_direct and not test_name.startswith("nvidia_nim_direct"):
+                continue
+
+            # Skip NVIDIA tests if not nvidia_direct
+            if test_name.startswith("nvidia_nim_direct") and not args.nvidia_direct:
+                continue
+
             # Skip tool tests if requested
             if args.simple and "tools" in test_data:
                 continue
-                
+
             # Skip non-tool tests if tools_only
             if args.tools_only and "tools" not in test_data:
                 continue
-                
+
             # Run the test
             check_tools = "tools" in test_data
-            result = test_request(test_name, test_data, check_tools=check_tools)
+            proxy_only = test_name.startswith("nvidia_nim_direct")
+            result = test_request(test_name, test_data, check_tools=check_tools, proxy_only=proxy_only)
             results[test_name] = result
-    
+
     # Now run streaming tests
     if not args.no_streaming:
         print("\n\n=========== RUNNING STREAMING TESTS ===========\n")
@@ -664,17 +915,26 @@ async def run_tests(args):
             # Only select streaming tests, or force streaming
             if not test_data.get("stream") and not test_name.endswith("_stream"):
                 continue
-                
+
+            # Skip non-NVIDIA tests if nvidia_direct
+            if args.nvidia_direct and not test_name.startswith("nvidia_nim_direct"):
+                continue
+
+            # Skip NVIDIA tests if not nvidia_direct
+            if test_name.startswith("nvidia_nim_direct") and not args.nvidia_direct:
+                continue
+
             # Skip tool tests if requested
             if args.simple and "tools" in test_data:
                 continue
-                
+
             # Skip non-tool tests if tools_only
             if args.tools_only and "tools" not in test_data:
                 continue
-                
+
             # Run the streaming test
-            result = await test_streaming(test_name, test_data)
+            proxy_only = test_name.startswith("nvidia_nim_direct")
+            result = await test_streaming(test_name, test_data, proxy_only=proxy_only)
             results[f"{test_name}_streaming"] = result
     
     # Print summary
@@ -706,6 +966,7 @@ async def main():
     parser.add_argument("--streaming-only", action="store_true", help="Only run streaming tests")
     parser.add_argument("--simple", action="store_true", help="Only run simple tests (no tools)")
     parser.add_argument("--tools-only", action="store_true", help="Only run tool tests")
+    parser.add_argument("--nvidia-direct", action="store_true", help="Only run NVIDIA NIM Direct tests")
     args = parser.parse_args()
     
     # Run tests

@@ -16,7 +16,6 @@ from typing import Optional
 import uvicorn
 import time
 import litellm
-import json
 
 # Load environment variables
 load_dotenv()
@@ -84,7 +83,6 @@ from src.models.request import (
     TokenCountResponse,
 )
 from src.utils.helpers import log_request_beautifully
-import litellm
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -287,8 +285,8 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         # Configure LiteLLM for this provider
         configure_litellm_for_provider(PREFERRED_PROVIDER)
 
-        # Prepare request using provider
-        litellm_request = provider.prepare_request(MessagesRequest(
+        # Prepare request using provider (use async when available to avoid blocking rate limits)
+        temp_request = MessagesRequest(
             model=request_data.model,
             max_tokens=100,
             messages=request_data.messages,
@@ -296,7 +294,11 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             tools=request_data.tools,
             tool_choice=request_data.tool_choice,
             thinking=request_data.thinking
-        ))
+        )
+        if hasattr(provider, 'prepare_request_async'):
+            litellm_request = await provider.prepare_request_async(temp_request)
+        else:
+            litellm_request = provider.prepare_request(temp_request)
 
         # Log beautifully
         num_tools = len(request_data.tools) if request_data.tools else 0

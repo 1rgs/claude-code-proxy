@@ -1,6 +1,7 @@
 """Utility for robust token counting across various LLM providers."""
 
 import logging
+import json
 from typing import List, Dict, Any
 from litellm import token_counter
 import tiktoken
@@ -44,18 +45,43 @@ def get_robust_token_count(messages: List[Dict[str, Any]], model: str) -> int:
             elif isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict):
+                        # Handle text blocks
                         text = block.get("text", "") or block.get("content", "")
-                        if isinstance(text, str):
+                        if isinstance(text, str) and text:
                             total_tokens += len(encoding.encode(text))
 
+                        # Handle tool results
+                        if block.get("type") == "tool_result":
+                            tool_content = block.get("content", "")
+                            if isinstance(tool_content, str):
+                                total_tokens += len(encoding.encode(tool_content))
+                            elif isinstance(tool_content, list):
+                                for item in tool_content:
+                                    if isinstance(item, dict) and item.get("text"):
+                                        total_tokens += len(
+                                            encoding.encode(item["text"])
+                                        )
+                                    elif isinstance(item, str):
+                                        total_tokens += len(encoding.encode(item))
+
+                        # Handle tool use
+                        if block.get("type") == "tool_use":
+                            total_tokens += len(encoding.encode(block.get("name", "")))
+                            total_tokens += len(
+                                encoding.encode(json.dumps(block.get("input", {})))
+                            )
+                    elif isinstance(block, str):
+                        total_tokens += len(encoding.encode(block))
+
             # Add overhead for message structure (rough estimate)
+            # OpenAI typically adds ~4-5 tokens per message
             total_tokens += 4
 
         # Add overhead for the final response trigger
         total_tokens += 3
 
-        logger.info(
-            f"Fallback token count (tiktoken/{encoding_name}) used for model {model}: {total_tokens}"
+        logger.debug(
+            f"Robust token count (tiktoken/{encoding_name}) used for model {model}: {total_tokens}"
         )
         return total_tokens
     except Exception as e:

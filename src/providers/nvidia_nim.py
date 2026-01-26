@@ -392,7 +392,10 @@ class NVIDIANIMProvider(BaseProvider):
         )
 
     async def stream_response(
-        self, litellm_generator: AsyncIterator
+        self,
+        litellm_generator: AsyncIterator,
+        input_tokens: int = 0,
+        model: str = "claude-sonnet-4-20250514",
     ) -> AsyncIterator[str]:
         """Stream NIM response with dynamic reasoning_content parsing."""
         import json
@@ -400,7 +403,20 @@ class NVIDIANIMProvider(BaseProvider):
 
         # Send message_start event
         message_id = f"msg_{uuid.uuid4()}"
-        yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant'}})}\n\n"
+        message_start = {
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": model,
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": input_tokens, "output_tokens": 1},
+            },
+        }
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
         # Send initial content_block_start for thinking (index 0) so the client has a block during thinking phase
         yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
@@ -419,6 +435,9 @@ class NVIDIANIMProvider(BaseProvider):
         tool_id_to_block = {}  # tool_id -> our block index
         tool_id_to_content = {}  # tool_id -> accumulated arguments
 
+        # Track usage from LiteLLM
+        actual_usage = None
+
         async for chunk in litellm_generator:
             # Extract choice and delta
             choice = None
@@ -433,6 +452,12 @@ class NVIDIANIMProvider(BaseProvider):
                 choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
                 delta = choice.get("delta", {})
                 finish_reason = choice.get("finish_reason")
+
+            # Extract usage if present
+            if hasattr(chunk, "usage") and chunk.usage:
+                actual_usage = chunk.usage
+            elif isinstance(chunk, dict) and chunk.get("usage"):
+                actual_usage = chunk.get("usage")
 
             # Extract delta content, delta reasoning, and delta tool_calls (DYNAMIC - parse whatever is present)
             delta_content = None
@@ -609,7 +634,21 @@ class NVIDIANIMProvider(BaseProvider):
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                     text_block_closed = True
 
-                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': None})}\n\n"
+                # Determine final usage
+                final_usage = {
+                    "output_tokens": (len(accumulated_text) // 4)
+                    + (len(accumulated_reasoning) // 4)
+                    + (len(tool_id_to_content) * 50)
+                }
+                if actual_usage:
+                    if hasattr(actual_usage, "completion_tokens"):
+                        final_usage["output_tokens"] = actual_usage.completion_tokens
+                    elif isinstance(actual_usage, dict):
+                        final_usage["output_tokens"] = actual_usage.get(
+                            "completion_tokens", final_usage["output_tokens"]
+                        )
+
+                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': final_usage})}\n\n"
                 yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
                 yield "[DONE]\n"
                 break
@@ -623,7 +662,22 @@ class NVIDIANIMProvider(BaseProvider):
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
             if not text_block_closed:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
+
+            # Determine final usage
+            final_usage = {
+                "output_tokens": (len(accumulated_text) // 4)
+                + (len(accumulated_reasoning) // 4)
+                + 1
+            }
+            if actual_usage:
+                if hasattr(actual_usage, "completion_tokens"):
+                    final_usage["output_tokens"] = actual_usage.completion_tokens
+                elif isinstance(actual_usage, dict):
+                    final_usage["output_tokens"] = actual_usage.get(
+                        "completion_tokens", final_usage["output_tokens"]
+                    )
+
+            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': final_usage})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
             yield "[DONE]\n"
 

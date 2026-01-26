@@ -181,7 +181,10 @@ class AnthropicProvider(BaseProvider):
         )
 
     async def stream_response(
-        self, litellm_generator: AsyncIterator, model: str = "claude-sonnet-4-20250514"
+        self,
+        litellm_generator: AsyncIterator,
+        input_tokens: int = 0,
+        model: str = "claude-sonnet-4-20250514",
     ) -> AsyncIterator[str]:
         """Stream in Anthropic SSE format."""
         import json
@@ -199,7 +202,7 @@ class AnthropicProvider(BaseProvider):
                 "model": model,
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 1},
+                "usage": {"input_tokens": input_tokens, "output_tokens": 1},
             },
         }
         yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
@@ -219,6 +222,9 @@ class AnthropicProvider(BaseProvider):
         tool_index_to_id = {}  # tool index -> tool_id
         tool_index_to_content = {}  # tool index -> accumulated arguments
 
+        # Track usage from LiteLLM
+        actual_usage = None
+
         async for chunk in litellm_generator:
             # Extract choice and delta
             choice = None
@@ -233,6 +239,12 @@ class AnthropicProvider(BaseProvider):
                 choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
                 delta = choice.get("delta", {})
                 finish_reason = choice.get("finish_reason")
+
+            # Extract usage if present
+            if hasattr(chunk, "usage") and chunk.usage:
+                actual_usage = chunk.usage
+            elif isinstance(chunk, dict) and chunk.get("usage"):
+                actual_usage = chunk.get("usage")
 
             # Extract delta content
             delta_content = None
@@ -327,7 +339,20 @@ class AnthropicProvider(BaseProvider):
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                     text_block_closed = True
 
-                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': len(accumulated_text) // 4 + len(tool_index_to_content) * 50}})}\n\n"
+                # Determine final usage
+                final_usage = {
+                    "output_tokens": len(accumulated_text) // 4
+                    + len(tool_index_to_content) * 50
+                }
+                if actual_usage:
+                    if hasattr(actual_usage, "completion_tokens"):
+                        final_usage["output_tokens"] = actual_usage.completion_tokens
+                    elif isinstance(actual_usage, dict):
+                        final_usage["output_tokens"] = actual_usage.get(
+                            "completion_tokens", final_usage["output_tokens"]
+                        )
+
+                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': final_usage})}\n\n"
                 yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
                 yield "[DONE]\n\n"
                 break
@@ -340,7 +365,18 @@ class AnthropicProvider(BaseProvider):
             # Close text block if still open
             if not text_block_closed and not tool_calls_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': len(accumulated_text) // 4 + 1}})}\n\n"
+
+            # Determine final usage
+            final_usage = {"output_tokens": len(accumulated_text) // 4 + 1}
+            if actual_usage:
+                if hasattr(actual_usage, "completion_tokens"):
+                    final_usage["output_tokens"] = actual_usage.completion_tokens
+                elif isinstance(actual_usage, dict):
+                    final_usage["output_tokens"] = actual_usage.get(
+                        "completion_tokens", final_usage["output_tokens"]
+                    )
+
+            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': final_usage})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
             yield "[DONE]\n\n"
 

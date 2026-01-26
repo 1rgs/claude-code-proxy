@@ -51,7 +51,10 @@ class BaseProvider(ABC):
 
     @abstractmethod
     async def stream_response(
-        self, litellm_generator: AsyncIterator
+        self,
+        litellm_generator: AsyncIterator,
+        input_tokens: int = 0,
+        model: str = "claude-sonnet-4-20250514",
     ) -> AsyncIterator[str]:
         """Streams provider response in Anthropic SSE format."""
         pass

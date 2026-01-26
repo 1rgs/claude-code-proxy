@@ -281,7 +281,10 @@ class NVIDIANIMDirectProvider(BaseProvider):
         return body
 
     async def stream_response_direct(
-        self, request_data: Any, count_towards_limit: bool = True
+        self,
+        request_data: Any,
+        count_towards_limit: bool = True,
+        input_tokens: int = 0,
     ) -> AsyncIterator[str]:
         """Stream response directly from NVIDIA NIM using httpx with thinking support."""
         if count_towards_limit:
@@ -306,7 +309,7 @@ class NVIDIANIMDirectProvider(BaseProvider):
                 "model": request_data.model,
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "usage": {"input_tokens": input_tokens, "output_tokens": 1},
             },
         }
         yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
@@ -471,15 +474,15 @@ class NVIDIANIMDirectProvider(BaseProvider):
 
         # Usage
         if usage_info:
-            output_tokens = usage_info.get("completion_tokens", 0)
+            final_output_tokens = usage_info.get("completion_tokens", 0)
         else:
-            output_tokens = (
+            final_output_tokens = (
                 len(accumulated_text) // 4
                 + len(accumulated_reasoning) // 4
                 + len(tool_index_to_content) * 50
             )
 
-        yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': output_tokens}})}\n\n"
+        yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': final_output_tokens}})}\n\n"
         yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
         yield "[DONE]\n\n"
 

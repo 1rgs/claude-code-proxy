@@ -244,8 +244,19 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
             )
 
             if request_data.stream:
+                # Count input tokens for direct streaming
+                # Since direct provider bypasses prepare_request, we use the build_request_body logic or robust counter
+                # For NIM direct, we can use the same messages conversion or just the robust counter on original messages
+                input_tokens = await asyncio.to_thread(
+                    get_robust_token_count,
+                    messages=request_data.messages,
+                    model=request_data.model,
+                )
+
                 return StreamingResponse(
-                    provider.stream_response_direct(request_data),
+                    provider.stream_response_direct(
+                        request_data, input_tokens=input_tokens
+                    ),
                     media_type="text/event-stream",
                 )
             else:
@@ -266,6 +277,17 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                     litellm_request = await asyncio.to_thread(
                         provider.prepare_streaming_request, request_data
                     )
+
+                # Count input tokens for streaming
+                input_tokens = await asyncio.to_thread(
+                    get_robust_token_count,
+                    messages=litellm_request["messages"],
+                    model=litellm_request["model"],
+                )
+
+                # Include usage in stream if possible
+                litellm_request["stream_options"] = {"include_usage": True}
+
                 response_generator = await litellm.acompletion(**litellm_request)
 
                 # Log beautifully
@@ -281,7 +303,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 )
 
                 return StreamingResponse(
-                    provider.stream_response(response_generator),
+                    provider.stream_response(
+                        response_generator,
+                        input_tokens=input_tokens,
+                        model=original_model,
+                    ),
                     media_type="text/event-stream",
                 )
             else:
@@ -423,7 +449,7 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         token_count = await asyncio.to_thread(
             get_robust_token_count,
             messages=litellm_request["messages"],
-            model=litellm_request["model"],
+            model=litellm_request.get("model") or request_data.model,
         )
 
         return TokenCountResponse(input_tokens=token_count)

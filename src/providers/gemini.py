@@ -228,9 +228,22 @@ class GeminiProvider(BaseProvider):
         import json
         import uuid
 
-        # Send message_start event
+        # Send message_start event with all required fields
         message_id = f"msg_{uuid.uuid4()}"
-        yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant'}})}\n\n"
+        message_start = {
+            "type": "message_start",
+            "message": {
+                "id": message_id,
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-sonnet-4-20250514",
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 1}
+            }
+        }
+        yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
         # Send text block start
         yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
@@ -358,9 +371,9 @@ class GeminiProvider(BaseProvider):
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                     text_block_closed = True
 
-                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': None})}\n\n"
+                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': len(accumulated_text) // 4 + len(tool_index_to_content) * 50}})}\n\n"
                 yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
-                yield "[DONE]\n"
+                yield "[DONE]\n\n"
                 break
 
         # If we didn't get a finish_reason, close the response
@@ -371,9 +384,9 @@ class GeminiProvider(BaseProvider):
             # Close text block if still open
             if not text_block_closed and not tool_calls_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
+            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': {'output_tokens': len(accumulated_text) // 4 + 1}})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
-            yield "[DONE]\n"
+            yield "[DONE]\n\n"
 
     def should_flatten_messages(self) -> bool:
         return True

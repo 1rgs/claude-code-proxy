@@ -45,7 +45,9 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `nvidia_nim`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `NVIDIA_NIM_BASE_URL` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, base URL for NVIDIA NIM (default: `https://integrate.api.nvidia.com/v1`).
+   *   `NVIDIA_NIM_API_KEY` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, your NVIDIA API key (e.g. `nvapi-...`).
    *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
 
@@ -53,6 +55,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
    - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
    - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
+   - If `PREFERRED_PROVIDER=nvidia_nim`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` with **no prefix**; the model id is sent as-is to NVIDIA NIM.
 
 4. **Run the server**:
    ```bash
@@ -193,6 +196,20 @@ PREFERRED_PROVIDER="openai"
 BIG_MODEL="gpt-4o" # Example specific model
 SMALL_MODEL="gpt-4o-mini" # Example specific model
 ```
+
+**Example 5: NVIDIA NIM (no model prefix)**
+```dotenv
+PREFERRED_PROVIDER="nvidia_nim"
+NVIDIA_NIM_BASE_URL="https://integrate.api.nvidia.com/v1"
+NVIDIA_NIM_API_KEY="nvapi-your-key"
+BIG_MODEL="z.ai/glm4.7"
+SMALL_MODEL="z.ai/glm4.7"
+```
+
+*Use case: With `PREFERRED_PROVIDER=nvidia_nim`, the proxy does **not** add `openai/`, `gemini/`, or `anthropic/` to model names. The model id (e.g. `z.ai/glm4.7`) is sent as-is to NVIDIA NIM at `integrate.api.nvidia.com`. Use this when backing Claude Code with NVIDIA NIM models.*
+
+- **Tool results with nvidia_nim**: Tool results are sent as `role: "tool"` messages (OpenAI-style) instead of a single `role: "user"` message with concatenated tool output. Assistant messages with `tool_use` are converted to `content` + `tool_calls` for the backend.
+- **extra_body**: You can pass `extra_body` on the request (e.g. `{"thinking": {"type": "enabled", "clear_thinking": false}}` for z.ai/GLM or `{"reasoning_budget": 16384, "chat_template_kwargs": {"enable_thinking": true}}` for NIM) to enable reasoning/thinking; it is forwarded to LiteLLM and the backend. The proxy streams `reasoning_content` as `content_block_start`/`content_block_delta`/`content_block_stop` for `type: "thinking"` and `thinking_delta`, and includes `reasoning_content` and a thinking block in non-streaming responses.
 
 ## How It Works 🧩
 

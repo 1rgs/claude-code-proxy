@@ -92,13 +92,21 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
-# Get preferred provider (default to openai)
+# NVIDIA NIM (no model prefix; use with PREFERRED_PROVIDER=nvidia_nim)
+NVIDIA_NIM_BASE_URL = os.environ.get("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_NIM_API_KEY = os.environ.get("NVIDIA_NIM_API_KEY")
+
+# Get preferred provider (default to openai). Also supports: google, anthropic, nvidia_nim
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
-# Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+# Get model mapping configuration from environment.
+# For nvidia_nim: defaults to z.ai/glm4.7 (valid NIM model id); for others, OpenAI-style defaults.
+if PREFERRED_PROVIDER == "nvidia_nim":
+    BIG_MODEL = os.environ.get("BIG_MODEL", "z.ai/glm4.7")
+    SMALL_MODEL = os.environ.get("SMALL_MODEL", "z.ai/glm4.7")
+else:
+    BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
+    SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -165,13 +173,19 @@ class ContentBlockToolResult(BaseModel):
     tool_use_id: str
     content: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any], Any]
 
+class ContentBlockThinking(BaseModel):
+    type: Literal["thinking"]
+    thinking: str
+
 class SystemContent(BaseModel):
     type: Literal["text"]
     text: str
 
 class Message(BaseModel):
-    role: Literal["user", "assistant"] 
-    content: Union[str, List[Union[ContentBlockText, ContentBlockImage, ContentBlockToolUse, ContentBlockToolResult]]]
+    role: Literal["user", "assistant"]
+    content: Union[str, List[Union[ContentBlockText, ContentBlockImage, ContentBlockToolUse, ContentBlockToolResult, ContentBlockThinking]]]
+    reasoning_content: Optional[str] = None
+    thinking_blocks: Optional[List[Dict[str, Any]]] = None
 
 class Tool(BaseModel):
     name: str
@@ -195,8 +209,9 @@ class MessagesRequest(BaseModel):
     tools: Optional[List[Tool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     thinking: Optional[ThinkingConfig] = None
+    extra_body: Optional[Dict[str, Any]] = None
     original_model: Optional[str] = None  # Will store the original model name
-    
+
     @field_validator('model')
     def validate_model_field(cls, v, info): # Renamed to avoid conflict
         original_model = v
@@ -215,7 +230,19 @@ class MessagesRequest(BaseModel):
 
         # --- Mapping Logic --- START ---
         mapped = False
-        if PREFERRED_PROVIDER == "anthropic":
+        if PREFERRED_PROVIDER == "nvidia_nim":
+            # NVIDIA NIM: no prefix; haiku/sonnet -> BIG/SMALL_MODEL, else pass-through
+            if 'haiku' in clean_v.lower():
+                new_model = SMALL_MODEL
+                mapped = True
+            elif 'sonnet' in clean_v.lower():
+                new_model = BIG_MODEL
+                mapped = True
+            else:
+                new_model = v
+                mapped = True
+
+        elif PREFERRED_PROVIDER == "anthropic":
             # Don't remap to big/small models, just add the prefix
             new_model = f"anthropic/{clean_v}"
             mapped = True
@@ -238,8 +265,8 @@ class MessagesRequest(BaseModel):
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
 
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
+        # Add prefixes to non-mapped models if they match known lists (skip for nvidia_nim)
+        elif not mapped and PREFERRED_PROVIDER != "nvidia_nim":
             if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
                 new_model = f"gemini/{clean_v}"
                 mapped = True # Technically mapped to add prefix
@@ -293,8 +320,20 @@ class TokenCountRequest(BaseModel):
 
         # --- Mapping Logic --- START ---
         mapped = False
+        if PREFERRED_PROVIDER == "nvidia_nim":
+            # NVIDIA NIM: no prefix; haiku/sonnet -> BIG/SMALL_MODEL, else pass-through
+            if 'haiku' in clean_v.lower():
+                new_model = SMALL_MODEL
+                mapped = True
+            elif 'sonnet' in clean_v.lower():
+                new_model = BIG_MODEL
+                mapped = True
+            else:
+                new_model = v
+                mapped = True
+
         # Map Haiku to SMALL_MODEL based on provider preference
-        if 'haiku' in clean_v.lower():
+        elif 'haiku' in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
@@ -311,8 +350,8 @@ class TokenCountRequest(BaseModel):
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
 
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
+        # Add prefixes to non-mapped models if they match known lists (skip for nvidia_nim)
+        elif not mapped and PREFERRED_PROVIDER != "nvidia_nim":
             if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
                 new_model = f"gemini/{clean_v}"
                 mapped = True # Technically mapped to add prefix
@@ -348,11 +387,12 @@ class MessagesResponse(BaseModel):
     id: str
     model: str
     role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]]
+    content: List[Union[ContentBlockText, ContentBlockToolUse, ContentBlockThinking]]
     type: Literal["message"] = "message"
     stop_reason: Optional[Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]] = None
     stop_sequence: Optional[str] = None
     usage: Usage
+    reasoning_content: Optional[str] = None
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -443,108 +483,118 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     for idx, msg in enumerate(anthropic_request.messages):
         content = msg.content
         if isinstance(content, str):
-            messages.append({"role": msg.role, "content": content})
+            m = {"role": msg.role, "content": content}
+            if msg.role == "assistant":
+                if getattr(msg, "reasoning_content", None):
+                    m["reasoning_content"] = msg.reasoning_content
+                if getattr(msg, "thinking_blocks", None):
+                    m["thinking_blocks"] = msg.thinking_blocks
+            messages.append(m)
         else:
-            # Special handling for tool_result in user messages
-            # OpenAI/LiteLLM format expects the assistant to call the tool, 
-            # and the user's next message to include the result as plain text
-            if msg.role == "user" and any(block.type == "tool_result" for block in content if hasattr(block, "type")):
-                # For user messages with tool_result, split into separate messages
+            # Helper to get block type, for dict or model
+            def _block_type(b):
+                return getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+
+            # nvidia_nim: user with only tool_result -> role "tool" messages
+            is_only_tool_result = (
+                msg.role == "user"
+                and len(content) > 0
+                and all(_block_type(b) == "tool_result" for b in content)
+            )
+            if is_only_tool_result and PREFERRED_PROVIDER == "nvidia_nim":
+                for block in content:
+                    bid = getattr(block, "tool_use_id", None) or (block.get("tool_use_id") if isinstance(block, dict) else "")
+                    bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                    flat = parse_tool_result_content(bcontent)
+                    messages.append({"role": "tool", "tool_call_id": bid, "content": flat})
+                continue
+
+            # nvidia_nim: assistant with list content -> content string, tool_calls, reasoning_content/thinking_blocks
+            if msg.role == "assistant" and PREFERRED_PROVIDER == "nvidia_nim" and isinstance(content, list):
+                text_parts = []
+                tool_calls = []
+                reasoning_parts = []
+                for block in content:
+                    btype = _block_type(block)
+                    if btype == "text":
+                        t = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else "")
+                        text_parts.append(t)
+                    elif btype == "image":
+                        text_parts.append("[Image]")
+                    elif btype == "thinking":
+                        th = getattr(block, "thinking", None) or (block.get("thinking") if isinstance(block, dict) else "")
+                        reasoning_parts.append(th)
+                    elif btype == "tool_use":
+                        bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
+                        bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
+                        binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
+                        args = json.dumps(binput) if isinstance(binput, dict) else str(binput)
+                        tool_calls.append({"id": bid, "type": "function", "function": {"name": bname, "arguments": args}})
+                m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else ""}
+                if tool_calls:
+                    m["tool_calls"] = tool_calls
+                reasoning_content = getattr(msg, "reasoning_content", None) or ("\n".join(reasoning_parts) if reasoning_parts else None)
+                if reasoning_content:
+                    m["reasoning_content"] = reasoning_content
+                if getattr(msg, "thinking_blocks", None):
+                    m["thinking_blocks"] = msg.thinking_blocks
+                messages.append(m)
+                continue
+
+            # User with tool_result (non-nvidia_nim): single user message with concatenated text
+            if msg.role == "user" and any(_block_type(b) == "tool_result" for b in content):
                 text_content = ""
-                
-                # Extract all text parts and concatenate them
                 for block in content:
-                    if hasattr(block, "type"):
-                        if block.type == "text":
-                            text_content += block.text + "\n"
-                        elif block.type == "tool_result":
-                            # Add tool result as a message by itself - simulate the normal flow
-                            tool_id = block.tool_use_id if hasattr(block, "tool_use_id") else ""
-                            
-                            # Handle different formats of tool result content
-                            result_content = ""
-                            if hasattr(block, "content"):
-                                if isinstance(block.content, str):
-                                    result_content = block.content
-                                elif isinstance(block.content, list):
-                                    # If content is a list of blocks, extract text from each
-                                    for content_block in block.content:
-                                        if hasattr(content_block, "type") and content_block.type == "text":
-                                            result_content += content_block.text + "\n"
-                                        elif isinstance(content_block, dict) and content_block.get("type") == "text":
-                                            result_content += content_block.get("text", "") + "\n"
-                                        elif isinstance(content_block, dict):
-                                            # Handle any dict by trying to extract text or convert to JSON
-                                            if "text" in content_block:
-                                                result_content += content_block.get("text", "") + "\n"
-                                            else:
-                                                try:
-                                                    result_content += json.dumps(content_block) + "\n"
-                                                except:
-                                                    result_content += str(content_block) + "\n"
-                                elif isinstance(block.content, dict):
-                                    # Handle dictionary content
-                                    if block.content.get("type") == "text":
-                                        result_content = block.content.get("text", "")
-                                    else:
-                                        try:
-                                            result_content = json.dumps(block.content)
-                                        except:
-                                            result_content = str(block.content)
-                                else:
-                                    # Handle any other type by converting to string
-                                    try:
-                                        result_content = str(block.content)
-                                    except:
-                                        result_content = "Unparseable content"
-                            
-                            # In OpenAI format, tool results come from the user (rather than being content blocks)
-                            text_content += f"Tool result for {tool_id}:\n{result_content}\n"
-                
-                # Add as a single user message with all the content
+                    btype = _block_type(block)
+                    if btype == "text":
+                        t = getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
+                        text_content += t + "\n"
+                    elif btype == "tool_result":
+                        tool_id = getattr(block, "tool_use_id", None) or (block.get("tool_use_id", "") if isinstance(block, dict) else "")
+                        result_content = parse_tool_result_content(getattr(block, "content", None) if not isinstance(block, dict) else block.get("content"))
+                        text_content += f"Tool result for {tool_id}:\n{result_content}\n"
                 messages.append({"role": "user", "content": text_content.strip()})
-            else:
-                # Regular handling for other message types
-                processed_content = []
-                for block in content:
-                    if hasattr(block, "type"):
-                        if block.type == "text":
-                            processed_content.append({"type": "text", "text": block.text})
-                        elif block.type == "image":
-                            processed_content.append({"type": "image", "source": block.source})
-                        elif block.type == "tool_use":
-                            # Handle tool use blocks if needed
-                            processed_content.append({
-                                "type": "tool_use",
-                                "id": block.id,
-                                "name": block.name,
-                                "input": block.input
-                            })
-                        elif block.type == "tool_result":
-                            # Handle different formats of tool result content
-                            processed_content_block = {
-                                "type": "tool_result",
-                                "tool_use_id": block.tool_use_id if hasattr(block, "tool_use_id") else ""
-                            }
-                            
-                            # Process the content field properly
-                            if hasattr(block, "content"):
-                                if isinstance(block.content, str):
-                                    # If it's a simple string, create a text block for it
-                                    processed_content_block["content"] = [{"type": "text", "text": block.content}]
-                                elif isinstance(block.content, list):
-                                    # If it's already a list of blocks, keep it
-                                    processed_content_block["content"] = block.content
-                                else:
-                                    # Default fallback
-                                    processed_content_block["content"] = [{"type": "text", "text": str(block.content)}]
-                            else:
-                                # Default empty content
-                                processed_content_block["content"] = [{"type": "text", "text": ""}]
-                                
-                            processed_content.append(processed_content_block)
-                
-                messages.append({"role": msg.role, "content": processed_content})
+                continue
+
+            # Regular handling for other message types
+            processed_content = []
+            reasoning_parts = []
+            for block in content:
+                btype = _block_type(block)
+                if btype == "text":
+                    t = getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
+                    processed_content.append({"type": "text", "text": t})
+                elif btype == "image":
+                    src = getattr(block, "source", None) or (block.get("source", {}) if isinstance(block, dict) else {})
+                    processed_content.append({"type": "image", "source": src})
+                elif btype == "thinking":
+                    th = getattr(block, "thinking", None) or (block.get("thinking") if isinstance(block, dict) else "")
+                    reasoning_parts.append(th)
+                elif btype == "tool_use":
+                    bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
+                    bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
+                    binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
+                    processed_content.append({"type": "tool_use", "id": bid, "name": bname, "input": binput})
+                elif btype == "tool_result":
+                    tid = getattr(block, "tool_use_id", None) or (block.get("tool_use_id", "") if isinstance(block, dict) else "")
+                    processed_content_block = {"type": "tool_result", "tool_use_id": tid}
+                    bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                    if isinstance(bcontent, str):
+                        processed_content_block["content"] = [{"type": "text", "text": bcontent}]
+                    elif isinstance(bcontent, list):
+                        processed_content_block["content"] = bcontent
+                    else:
+                        processed_content_block["content"] = [{"type": "text", "text": str(bcontent) if bcontent is not None else ""}]
+                    processed_content.append(processed_content_block)
+
+            m = {"role": msg.role, "content": processed_content}
+            if msg.role == "assistant":
+                reasoning_content = getattr(msg, "reasoning_content", None) or ("\n".join(reasoning_parts) if reasoning_parts else None)
+                if reasoning_content:
+                    m["reasoning_content"] = reasoning_content
+                if getattr(msg, "thinking_blocks", None):
+                    m["thinking_blocks"] = msg.thinking_blocks
+            messages.append(m)
     
     # Cap max_tokens for OpenAI models to their limit of 16384
     max_tokens = anthropic_request.max_tokens
@@ -632,7 +682,11 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         else:
             # Default to auto if we can't determine
             litellm_request["tool_choice"] = "auto"
-    
+
+    # Pass extra_body through to LiteLLM/backends (e.g. thinking config for z.ai/NIM)
+    if anthropic_request.extra_body:
+        litellm_request["extra_body"] = anthropic_request.extra_body
+
     return litellm_request
 
 def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any], 
@@ -686,6 +740,17 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             finish_reason = choices[0].get("finish_reason", "stop") if choices and len(choices) > 0 else "stop"
             usage_info = response_dict.get("usage", {})
             response_id = response_dict.get("id", f"msg_{uuid.uuid4()}")
+        
+        # Extract reasoning_content and thinking_blocks from message (for thinking backends e.g. nvidia_nim, z.ai)
+        reasoning_content = None
+        thinking_blocks = None
+        if message:
+            if isinstance(message, dict):
+                reasoning_content = message.get("reasoning_content")
+                thinking_blocks = message.get("thinking_blocks")
+            else:
+                reasoning_content = getattr(message, "reasoning_content", None)
+                thinking_blocks = getattr(message, "thinking_blocks", None)
         
         # Create content list for Anthropic format
         content = []
@@ -794,6 +859,10 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
         else:
             stop_reason = "end_turn"  # Default
         
+        # Prepend thinking block when reasoning_content is present (from thinking backends)
+        if reasoning_content is not None and reasoning_content != "":
+            content.insert(0, {"type": "thinking", "thinking": reasoning_content})
+        
         # Make sure content is never empty
         if not content:
             content.append({"type": "text", "text": ""})
@@ -809,7 +878,8 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             usage=Usage(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens
-            )
+            ),
+            reasoning_content=reasoning_content
         )
         
         return anthropic_response
@@ -871,7 +941,12 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         input_tokens = 0
         output_tokens = 0
         has_sent_stop_reason = False
-        last_tool_index = 0
+        tool_block_indices = []
+        next_block_index = 1
+        current_text_index = 0
+        thinking_index = None
+        accumulated_reasoning = ""
+        thinking_block_started = False
         
         # Process each chunk
         async for chunk in response_generator:
@@ -908,6 +983,39 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     elif isinstance(delta, dict) and 'content' in delta:
                         delta_content = delta['content']
                     
+                    # Read reasoning_content from delta (for thinking/reasoning backends)
+                    delta_reasoning = getattr(delta, 'reasoning_content', None) or (isinstance(delta, dict) and delta.get('reasoning_content'))
+                    
+                    # Process reasoning first (thinking blocks), before delta_content
+                    if delta_reasoning:
+                        if not thinking_block_started:
+                            if not text_block_closed:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                text_block_closed = True
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                            thinking_index = next_block_index
+                            next_block_index += 1
+                            thinking_block_started = True
+                        accumulated_reasoning += delta_reasoning
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
+                        # If both in same chunk: stop thinking and start text block
+                        if delta_content is not None and delta_content != "":
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                            thinking_block_started = False
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            current_text_index = next_block_index
+                            next_block_index += 1
+                            text_block_closed = False
+                    
+                    # When content arrives and thinking is still open: close thinking, open text
+                    if delta_content is not None and delta_content != "" and thinking_block_started:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                        thinking_block_started = False
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                        current_text_index = next_block_index
+                        next_block_index += 1
+                        text_block_closed = False
+                    
                     # Accumulate text content
                     if delta_content is not None and delta_content != "":
                         accumulated_text += delta_content
@@ -915,7 +1023,7 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                         # Always emit text deltas if no tool calls started
                         if tool_index is None and not text_block_closed:
                             text_sent = True
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
                     
                     # Process tool calls
                     delta_tool_calls = None
@@ -928,25 +1036,29 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     
                     # Process tool calls if any
                     if delta_tool_calls:
-                        # First tool call we've seen - need to handle text properly
+                        # First tool call we've seen - need to handle text and thinking properly
                         if tool_index is None:
+                            # Close thinking block if still open
+                            if thinking_block_started:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                thinking_block_started = False
                             # If we've been streaming text, close that text block
                             if text_sent and not text_block_closed:
                                 text_block_closed = True
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                             # If we've accumulated text but not sent it, we need to emit it now
                             # This handles the case where the first delta has both text and a tool call
                             elif accumulated_text and not text_sent and not text_block_closed:
                                 # Send the accumulated text
                                 text_sent = True
-                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': accumulated_text}})}\n\n"
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': accumulated_text}})}\n\n"
                                 # Close the text block
                                 text_block_closed = True
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                             # Close text block even if we haven't sent anything - models sometimes emit empty text blocks
                             elif not text_block_closed:
                                 text_block_closed = True
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                                 
                         # Convert to list if it's not already
                         if not isinstance(delta_tool_calls, list):
@@ -966,8 +1078,9 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                             if tool_index is None or current_index != tool_index:
                                 # New tool call - create a new tool_use block
                                 tool_index = current_index
-                                last_tool_index += 1
-                                anthropic_tool_index = last_tool_index
+                                anthropic_tool_index = next_block_index
+                                tool_block_indices.append(anthropic_tool_index)
+                                next_block_index += 1
                                 
                                 # Extract function info
                                 if isinstance(tool_call, dict):
@@ -1018,18 +1131,28 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
                     if finish_reason and not has_sent_stop_reason:
                         has_sent_stop_reason = True
                         
+                        # Close thinking block if still open
+                        if thinking_block_started:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                            thinking_block_started = False
+                        
+                        # If we only had reasoning (no content), emit an empty text block before message_delta
+                        if accumulated_text == "" and accumulated_reasoning != "":
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': next_block_index})}\n\n"
+                            next_block_index += 1
+                        
                         # Close any open tool call blocks
-                        if tool_index is not None:
-                            for i in range(1, last_tool_index + 1):
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
+                        for i in tool_block_indices:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
                         
                         # If we accumulated text but never sent or closed text block, do it now
                         if not text_block_closed:
                             if accumulated_text and not text_sent:
                                 # Send the accumulated text
-                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': accumulated_text}})}\n\n"
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': accumulated_text}})}\n\n"
                             # Close the text block
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                         
                         # Map OpenAI finish_reason to Anthropic stop_reason
                         stop_reason = "end_turn"
@@ -1058,13 +1181,22 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         
         # If we didn't get a finish reason, close any open blocks
         if not has_sent_stop_reason:
-            # Close any open tool call blocks
-            if tool_index is not None:
-                for i in range(1, last_tool_index + 1):
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
+            # Close thinking block if still open
+            if thinking_block_started:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
             
-            # Close the text content block
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            # If we only had reasoning (no content), emit an empty text block
+            if accumulated_text == "" and accumulated_reasoning != "":
+                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': next_block_index})}\n\n"
+            
+            # Close any open tool call blocks
+            for i in tool_block_indices:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': i})}\n\n"
+            
+            # Close the text content block if still open
+            if not text_block_closed:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
             
             # Send final message_delta with usage
             usage = {"output_tokens": output_tokens}
@@ -1140,12 +1272,23 @@ async def create_message(
             else:
                 litellm_request["api_key"] = GEMINI_API_KEY
                 logger.debug(f"Using Gemini API key for model: {request.model}")
+        elif PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("openai/", "gemini/", "anthropic/")):
+            # Use LiteLLM's native nvidia_nim provider: model="nvidia_nim/<id>" routes to integrate.api.nvidia.com
+            # See https://docs.litellm.ai/docs/providers/nvidia_nim
+            litellm_request["model"] = "nvidia_nim/" + request.model
+            litellm_request["api_base"] = NVIDIA_NIM_BASE_URL
+            litellm_request["api_key"] = NVIDIA_NIM_API_KEY
+            logger.debug(f"Using nvidia_nim for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
         
-        # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
+        # For OpenAI-compatible backends (openai/ or nvidia_nim) - modify request format to work with limitations
+        is_openai_compatible = (
+            request.model.startswith("openai/")
+            or (PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("gemini/", "anthropic/")))
+        )
+        if is_openai_compatible and "messages" in litellm_request:
             logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
@@ -1263,8 +1406,9 @@ async def create_message(
                         litellm_request["messages"][i]["content"] = "..." # Empty content not allowed
                 
                 # 2. Remove any fields OpenAI doesn't support in messages
+                # reasoning_content and thinking_blocks are passed through for thinking backends (nvidia_nim, z.ai, etc.)
                 for key in list(msg.keys()):
-                    if key not in ["role", "content", "name", "tool_call_id", "tool_calls"]:
+                    if key not in ["role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content", "thinking_blocks"]:
                         logger.warning(f"Removing unsupported field from message: {key}")
                         del msg[key]
             
@@ -1435,16 +1579,15 @@ async def count_tokens(
                 200  # Assuming success at this point
             )
             
-            # Prepare token counter arguments
+            # Prepare token counter arguments (token_counter only accepts model and messages)
             token_counter_args = {
                 "model": converted_request["model"],
                 "messages": converted_request["messages"],
             }
-            
-            # Add custom base URL for OpenAI models if configured
-            if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                token_counter_args["api_base"] = OPENAI_BASE_URL
-            
+            # NVIDIA NIM: use nvidia_nim/ prefix so LiteLLM picks the right encoding
+            if PREFERRED_PROVIDER == "nvidia_nim" and not request.model.startswith(("openai/", "gemini/", "anthropic/")):
+                token_counter_args["model"] = "nvidia_nim/" + converted_request["model"]
+
             # Count tokens
             token_count = token_counter(**token_counter_args)
             

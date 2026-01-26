@@ -239,7 +239,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                         request_data
                     )
                 else:
-                    litellm_request = provider.prepare_streaming_request(request_data)
+                    # Run sync method in thread pool to avoid blocking the event loop
+                    # This is critical for providers with rate limiting (e.g., NVIDIA NIM)
+                    litellm_request = await asyncio.to_thread(
+                        provider.prepare_streaming_request, request_data
+                    )
                 response_generator = await litellm.acompletion(**litellm_request)
 
                 # Log beautifully
@@ -262,7 +266,10 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 if hasattr(provider, "prepare_request_async"):
                     litellm_request = await provider.prepare_request_async(request_data)
                 else:
-                    litellm_request = provider.prepare_request(request_data)
+                    # Run sync method in thread pool to avoid blocking the event loop
+                    litellm_request = await asyncio.to_thread(
+                        provider.prepare_request, request_data
+                    )
                 litellm_response = await litellm.acompletion(**litellm_request)
                 anthropic_response = provider.convert_response(
                     litellm_response, request_data
@@ -368,7 +375,10 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         if hasattr(provider, "prepare_request_async"):
             litellm_request = await provider.prepare_request_async(temp_request)
         else:
-            litellm_request = provider.prepare_request(temp_request)
+            # Run sync method in thread pool to avoid blocking the event loop
+            litellm_request = await asyncio.to_thread(
+                provider.prepare_request, temp_request
+            )
 
         # Log beautifully
         num_tools = len(request_data.tools) if request_data.tools else 0

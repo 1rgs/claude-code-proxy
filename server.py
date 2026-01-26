@@ -14,6 +14,7 @@ import sys
 from typing import Optional
 import uvicorn
 import time
+import litellm
 
 # Load environment variables
 load_dotenv()

@@ -1,5 +1,5 @@
 """Request and response models for the Anthropic API."""
-from pydantic import BaseModel, Field, FieldValidator as field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import logging
 

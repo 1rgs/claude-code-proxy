@@ -47,6 +47,44 @@ uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
 ANTHROPIC_BASE_URL=http://localhost:8082 claude
 ```
 
+## Free Unlimited Usage with NVIDIA NIM Direct
+
+NVIDIA NIM Direct offers **free unlimited usage** with up to **40 requests per second**. This is perfect for local development and testing.
+
+### Getting Your Free API Key
+
+1. Visit [https://build.nvidia.com/settings/api-keys](https://build.nvidia.com/settings/api-keys)
+2. Sign in or create a free NVIDIA account
+3. Generate a new API key (`nvapi-...`)
+
+### Configuration
+
+```bash
+cp .env.example .env
+```
+
+Add to your `.env`:
+
+```dotenv
+PREFERRED_PROVIDER=nvidia_nim_direct
+NVIDIA_NIM_API_KEY=nvapi-...
+BIG_MODEL=z-ai/glm4.7
+SMALL_MODEL=z-ai/glm4.7
+```
+
+The `nvidia_nim_direct` provider offers better control over streaming and thinking block handling by bypassing LiteLLM entirely, while the built-in rate limiting ensures you stay within the 40 req/s limit.
+
+### Available Models
+
+Popular free NVIDIA NIM models include:
+- `z-ai/glm4.7` - General purpose LLM
+- `moonshotai/kimi-k2-thinking` - Thinking/reasoning model
+- `minimaxai/minimax-m2` - Multimodal AI
+- `deepseek-ai/deepseek-v3.2` - DeepSeek V3.2
+- `mistralai/devstral-2-123b-instruct-2512` - Large instruction model
+
+---
+
 ## Configuration
 
 ### Environment Variables
@@ -138,8 +176,8 @@ PREFERRED_PROVIDER=anthropic
 ```dotenv
 PREFERRED_PROVIDER=nvidia_nim
 NVIDIA_NIM_API_KEY=nvapi-...
-BIG_MODEL=z.ai/glm4.7
-SMALL_MODEL=z.ai/glm4.7
+BIG_MODEL=z-ai/glm4.7
+SMALL_MODEL=z-ai/glm4.7
 ```
 
 </details>
@@ -150,8 +188,8 @@ SMALL_MODEL=z.ai/glm4.7
 ```dotenv
 PREFERRED_PROVIDER=nvidia_nim_direct
 NVIDIA_NIM_API_KEY=nvapi-...
-BIG_MODEL=z.ai/glm4.7
-SMALL_MODEL=z.ai/glm4.7
+BIG_MODEL=z-ai/glm4.7
+SMALL_MODEL=z-ai/glm4.7
 ```
 
 *Direct provider offers better control and fixes edge cases with thinking blocks and tool calling.*

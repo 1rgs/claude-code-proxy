@@ -28,6 +28,7 @@ wheels/
 venv/
 env/
 ENV/
+.venv/
 
 # Logs
 *.log
@@ -37,4 +38,3 @@ ENV/
 .vscode/
 *.swp
 *.swo
-.venv

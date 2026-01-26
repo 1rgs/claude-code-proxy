@@ -9,7 +9,7 @@ class ProviderConfig(BaseModel):
     api_key: str
     base_url: Optional[str] = None
     rate_limit: Optional[int] = None  # requests per minute
-    rate_window: int = 60  # seconds
+    rate_window: int = 1  # seconds
 
     class Config:
         arbitrary_types_allowed = True

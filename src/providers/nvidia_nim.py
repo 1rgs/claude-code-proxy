@@ -1,4 +1,5 @@
 """NVIDIA NIM provider with full pass-through and dynamic response parsing."""
+import asyncio
 import logging
 from collections import deque
 import threading
@@ -106,11 +107,27 @@ class NVIDIANIMProvider(BaseProvider):
             self._request_timestamps.append(now)
             logger.debug(f"NVIDIA NIM request recorded. Count: {len(self._request_timestamps)}/{rate_limit}")
 
-    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
-        """Convert Anthropic format to NIM/OpenAI format with pass-through params."""
-        # Enforce rate limit
-        self._enforce_rate_limit()
+    async def _enforce_rate_limit_async(self):
+        """Enforce rate limit using asyncio.sleep so the event loop is not blocked."""
+        rate_limit = self.config.rate_limit or 40
+        now = time.time()
+        while True:
+            with self._rate_lock:
+                while self._request_timestamps and now - self._request_timestamps[0] > self.config.rate_window:
+                    self._request_timestamps.popleft()
+                if len(self._request_timestamps) < rate_limit:
+                    self._request_timestamps.append(now)
+                    logger.debug(f"NVIDIA NIM request recorded. Count: {len(self._request_timestamps)}/{rate_limit}")
+                    return
+                wait_time = self._request_timestamps[0] + self.config.rate_window - now
+            if wait_time <= 0:
+                now = time.time()
+                continue
+            await asyncio.sleep(wait_time)
+            now = time.time()
 
+    def _prepare_request_impl(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Core request conversion without rate limiting. Used by prepare_request and prepare_request_async."""
         # Core conversion (messages)
         messages = self._convert_messages(anthropic_request.messages)
 
@@ -159,6 +176,9 @@ class NVIDIANIMProvider(BaseProvider):
 
         # MERGE: extra_body - user extra_body is highest priority, then env extra_body
         user_extra_body = anthropic_request.extra_body.copy() if anthropic_request.extra_body else {}
+        # Map anthropic_request.thinking to extra_body.thinking so GLM thinking is enabled
+        if anthropic_request.thinking and getattr(anthropic_request.thinking, 'enabled', True):
+            user_extra_body.setdefault('thinking', {'type': 'enabled'})
         env_extra_body = self._nim_params.get("extra_body", {})
         if env_extra_body:
             for key, val in env_extra_body.items():
@@ -170,9 +190,25 @@ class NVIDIANIMProvider(BaseProvider):
 
         return litellm_request
 
+    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Convert Anthropic format to NIM/OpenAI format with pass-through params (sync; blocks on rate limit)."""
+        self._enforce_rate_limit()
+        return self._prepare_request_impl(anthropic_request)
+
+    async def prepare_request_async(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Async version that uses asyncio.sleep for rate limiting instead of blocking."""
+        await self._enforce_rate_limit_async()
+        return self._prepare_request_impl(anthropic_request)
+
     def prepare_streaming_request(self, anthropic_request: Any) -> Dict[str, Any]:
         """Same as prepare_request but with stream=True."""
         req = self.prepare_request(anthropic_request)
+        req["stream"] = True
+        return req
+
+    async def prepare_streaming_request_async(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Async version for streaming; uses non-blocking rate limit."""
+        req = await self.prepare_request_async(anthropic_request)
         req["stream"] = True
         return req
 
@@ -269,12 +305,15 @@ class NVIDIANIMProvider(BaseProvider):
         message_id = f"msg_{uuid.uuid4()}"
         yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant'}})}\n\n"
 
-        # Track state
+        # Send initial content_block_start for thinking (index 0) so the client has a block during thinking phase
+        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+
+        # Track state (0-based indices: initial thinking is 0, next block will be 1)
         message_delta = {"stop_reason": None, "usage": None}
         accumulated_text = ""
         accumulated_reasoning = ""
-        thinking_index = None
-        thinking_block_started = False
+        thinking_index = 0
+        thinking_block_started = True
         current_text_index = 0
         next_block_index = 1
         text_block_closed = True
@@ -299,16 +338,50 @@ class NVIDIANIMProvider(BaseProvider):
             delta_reasoning = None
 
             if delta:
-                if hasattr(delta, 'content'):
-                    delta_content = delta.content
-                elif isinstance(delta, dict):
-                    delta_content = delta.get('content')
+                raw_content = delta.content if hasattr(delta, 'content') else (delta.get('content') if isinstance(delta, dict) else None)
 
-                # DYNAMIC: Try to get reasoning_content if present
-                if hasattr(delta, 'reasoning_content'):
-                    delta_reasoning = delta.reasoning_content
-                elif isinstance(delta, dict):
-                    delta_reasoning = delta.get('reasoning_content')
+                # Structured content: list of {type, text} or {type, content} parts
+                if isinstance(raw_content, list):
+                    for part in raw_content:
+                        if isinstance(part, dict):
+                            ptype = part.get('type') or part.get('role')
+                            ptext = part.get('text') or part.get('content') or ''
+                        else:
+                            ptype = getattr(part, 'type', None) or getattr(part, 'role', None)
+                            ptext = getattr(part, 'text', None) or getattr(part, 'content', None) or ''
+                        if not ptext:
+                            continue
+                        if ptype in ('reasoning', 'thinking'):
+                            if not thinking_block_started:
+                                if not text_block_closed:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                    text_block_closed = True
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                thinking_index = next_block_index
+                                next_block_index += 1
+                                thinking_block_started = True
+                            accumulated_reasoning += ptext
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': ptext}})}\n\n"
+                        elif ptype in ('text', 'output'):
+                            if thinking_block_started:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                thinking_block_started = False
+                            if text_block_closed:
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                current_text_index = next_block_index
+                                next_block_index += 1
+                                text_block_closed = False
+                            accumulated_text += ptext
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': ptext}})}\n\n"
+                    continue
+
+                # Scalar: content and reasoning with fallback keys
+                delta_content = raw_content if isinstance(raw_content, str) else None
+                delta_reasoning = (
+                    getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
+                    if not isinstance(delta, dict)
+                    else (delta.get('reasoning_content') or delta.get('reasoning'))
+                )
 
             # Process reasoning_content if present (only if model returns it)
             if delta_reasoning:

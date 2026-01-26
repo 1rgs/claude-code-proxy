@@ -7,6 +7,7 @@ through LiteLLM, using a provider-based architecture for extensibility.
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
+import asyncio
 import os
 import logging
 import json
@@ -133,7 +134,7 @@ def get_provider_config(provider_name: str) -> ProviderConfig:
         raise ValueError(f"Unknown provider: {provider_name}")
 
 
-def configure_litellm_for_provider(provider_name: str, request_model: str):
+def configure_litellm_for_provider(provider_name: str):
     """Configure LiteLLM with the appropriate API key and base URL for the provider."""
     config = get_provider_config(provider_name)
 
@@ -181,11 +182,14 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
         logger.debug(f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}")
 
         # Configure LiteLLM for this provider
-        configure_litellm_for_provider(PREFERRED_PROVIDER, request_data.model)
+        configure_litellm_for_provider(PREFERRED_PROVIDER)
 
-        # Prepare request using provider
+        # Prepare request using provider (use async when available to avoid blocking rate limits)
         if request_data.stream:
-            litellm_request = provider.prepare_streaming_request(request_data)
+            if hasattr(provider, 'prepare_streaming_request_async'):
+                litellm_request = await provider.prepare_streaming_request_async(request_data)
+            else:
+                litellm_request = provider.prepare_streaming_request(request_data)
             response_generator = await litellm.acompletion(**litellm_request)
 
             # Log beautifully
@@ -205,8 +209,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 media_type="text/event-stream"
             )
         else:
-            litellm_request = provider.prepare_request(request_data)
-            litellm_response = litellm.completion(**litellm_request)
+            if hasattr(provider, 'prepare_request_async'):
+                litellm_request = await provider.prepare_request_async(request_data)
+            else:
+                litellm_request = provider.prepare_request(request_data)
+            litellm_response = await litellm.acompletion(**litellm_request)
             anthropic_response = provider.convert_response(litellm_response, request_data)
 
             # Log beautifully
@@ -277,7 +284,7 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         display_model = original_model.split("/")[-1] if "/" in original_model else original_model
 
         # Configure LiteLLM for this provider
-        configure_litellm_for_provider(PREFERRED_PROVIDER, request_data.model)
+        configure_litellm_for_provider(PREFERRED_PROVIDER)
 
         # Prepare request using provider
         litellm_request = provider.prepare_request(MessagesRequest(
@@ -302,8 +309,9 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             200
         )
 
-        # Count tokens
-        token_count = token_counter(
+        # Count tokens (run in thread to avoid blocking the event loop)
+        token_count = await asyncio.to_thread(
+            token_counter,
             messages=litellm_request["messages"],
             model=litellm_request["model"]
         )

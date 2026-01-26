@@ -41,11 +41,11 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
-   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
-   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `nvidia_nim`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
+   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=gemini` and `USE_VERTEX_AUTH=true`).
+   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `gemini`, `anthropic`, or `nvidia_nim`. This determines the primary backend for mapping `haiku`/`sonnet`.
    *   `NVIDIA_NIM_BASE_URL` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, base URL for NVIDIA NIM (default: `https://integrate.api.nvidia.com/v1`).
    *   `NVIDIA_NIM_API_KEY` (Optional): When `PREFERRED_PROVIDER=nvidia_nim`, your NVIDIA API key (e.g. `nvapi-...`).
    *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
@@ -53,7 +53,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
    **Mapping Logic:**
    - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
-   - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
+   - If `PREFERRED_PROVIDER=gemini`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
    - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
    - If `PREFERRED_PROVIDER=nvidia_nim`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` with **no prefix**; the model id is sent as-is to NVIDIA NIM.
 
@@ -152,7 +152,7 @@ Control the mapping using environment variables in your `.env` file or directly:
 No changes needed in `.env` beyond API keys, or ensure:
 ```dotenv
 OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=google
+GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=gemini
 # PREFERRED_PROVIDER="openai" # Optional, it's the default
 # BIG_MODEL="gpt-4.1" # Optional, it's the default
 # SMALL_MODEL="gpt-4.1-mini" # Optional, it's the default

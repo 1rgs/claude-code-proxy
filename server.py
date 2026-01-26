@@ -16,6 +16,7 @@ from typing import Optional
 import uvicorn
 import time
 import litellm
+import json
 
 # Load environment variables
 load_dotenv()

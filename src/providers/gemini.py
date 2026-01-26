@@ -1,6 +1,7 @@
 """Google Gemini provider implementation."""
 from typing import Dict, Any, Optional, AsyncIterator, Union
 import logging
+import json
 
 from .base import BaseProvider, ProviderConfig
 

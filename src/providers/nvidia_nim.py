@@ -6,6 +6,7 @@ import threading
 import time
 import os
 from typing import Dict, Any, Optional, AsyncIterator, Union
+import json
 
 from .base import BaseProvider, ProviderConfig
 
@@ -317,6 +318,11 @@ class NVIDIANIMProvider(BaseProvider):
         current_text_index = 0
         next_block_index = 1
         text_block_closed = True
+        tool_calls_started = False
+        current_tool_index = None
+        current_tool_id = None
+        current_tool_name = None
+        current_tool_content = ""
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -333,9 +339,10 @@ class NVIDIANIMProvider(BaseProvider):
                 delta = choice.get('delta', {})
                 finish_reason = choice.get('finish_reason')
 
-            # Extract delta content and delta reasoning (DYNAMIC - parse whatever is present)
+            # Extract delta content, delta reasoning, and delta tool_calls (DYNAMIC - parse whatever is present)
             delta_content = None
             delta_reasoning = None
+            delta_tool_calls = None
 
             if delta:
                 raw_content = delta.content if hasattr(delta, 'content') else (delta.get('content') if isinstance(delta, dict) else None)
@@ -375,16 +382,61 @@ class NVIDIANIMProvider(BaseProvider):
                             yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': ptext}})}\n\n"
                     continue
 
-                # Scalar: content and reasoning with fallback keys
+                # Scalar: content, reasoning, and tool_calls with fallback keys
                 delta_content = raw_content if isinstance(raw_content, str) else None
                 delta_reasoning = (
                     getattr(delta, 'reasoning_content', None) or getattr(delta, 'reasoning', None)
                     if not isinstance(delta, dict)
                     else (delta.get('reasoning_content') or delta.get('reasoning'))
                 )
+                delta_tool_calls = (
+                    getattr(delta, 'tool_calls', None)
+                    if not isinstance(delta, dict)
+                    else delta.get('tool_calls')
+                )
 
-            # Process reasoning_content if present (only if model returns it)
-            if delta_reasoning:
+            # Handle tool calls (before reasoning/text; takes precedence)
+            if delta_tool_calls:
+                if not tool_calls_started:
+                    if thinking_block_started:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                        thinking_block_started = False
+                    if not text_block_closed:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                        text_block_closed = True
+                    tool_calls_started = True
+
+                if not isinstance(delta_tool_calls, list):
+                    delta_tool_calls = [delta_tool_calls]
+
+                for tool_call in delta_tool_calls:
+                    if isinstance(tool_call, dict):
+                        function = tool_call.get('function', {})
+                        tool_id = tool_call.get('id')
+                        name = function.get('name')
+                        arguments = function.get('arguments')
+                    else:
+                        function = getattr(tool_call, 'function', None)
+                        tool_id = getattr(tool_call, 'id', None)
+                        name = getattr(function, 'name', None) if function else None
+                        arguments = getattr(function, 'arguments', None) if function else None
+
+                    if tool_id and tool_id != current_tool_id:
+                        if current_tool_id:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name or '', 'input': {}}})}\n\n"
+                        current_tool_id = tool_id
+                        current_tool_name = name
+                        current_tool_content = ""
+                        current_tool_index = next_block_index
+                        next_block_index += 1
+
+                    if arguments:
+                        current_tool_content += arguments if isinstance(arguments, str) else str(arguments)
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_tool_index, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
+
+            # Process reasoning_content if present (only if model returns it; skip when tool_calls started)
+            if delta_reasoning and not tool_calls_started:
                 if not thinking_block_started:
                     if not text_block_closed:
                         yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
@@ -405,8 +457,8 @@ class NVIDIANIMProvider(BaseProvider):
                     next_block_index += 1
                     text_block_closed = False
 
-            # Process text content
-            if delta_content and delta_content != "":
+            # Process text content (skip when tool_calls started)
+            if delta_content and delta_content != "" and not tool_calls_started:
                 # Close thinking if still open
                 if thinking_block_started:
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
@@ -433,6 +485,8 @@ class NVIDIANIMProvider(BaseProvider):
                 stop_reason = stop_reason_map.get(finish_reason, "end_turn")
 
                 # Close any open blocks
+                if tool_calls_started and current_tool_id:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
                 if thinking_block_started:
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
                     thinking_block_started = False
@@ -448,6 +502,8 @@ class NVIDIANIMProvider(BaseProvider):
 
         # If we didn't get a finish_reason, close any open blocks
         if not message_delta["stop_reason"]:
+            if tool_calls_started and current_tool_id:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
             if thinking_block_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
             yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"

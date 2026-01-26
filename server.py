@@ -94,6 +94,7 @@ from src.models.request import (
     TokenCountResponse,
 )
 from src.utils.helpers import log_request_beautifully
+from src.utils.token_count import get_robust_token_count
 
 # Global dictionary to hold initialized providers for lifespan management
 PROVIDERS: Dict[str, Any] = {}
@@ -372,8 +373,6 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
 async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
     """Count tokens using the configured provider."""
     try:
-        from litellm import token_counter
-
         # Log the request
         original_model = request_data.original_model or request_data.model
         display_model = (
@@ -422,7 +421,7 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
 
         # Count tokens (run in thread to avoid blocking the event loop)
         token_count = await asyncio.to_thread(
-            token_counter,
+            get_robust_token_count,
             messages=litellm_request["messages"],
             model=litellm_request["model"],
         )

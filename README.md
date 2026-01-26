@@ -1,4 +1,4 @@
-# Anthropic API Proxy for Gemini & OpenAI Models
+# Anthropic API Proxy for OpenAI-compatible Models
 
 A proxy server that lets you use Anthropic clients (like Claude Code) with OpenAI, Gemini, NVIDIA NIM, or direct Anthropic backends through a modular provider architecture.
 

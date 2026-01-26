@@ -16,7 +16,6 @@ from typing import Optional
 import uvicorn
 import time
 import litellm
-import json
 
 # Load environment variables
 load_dotenv()
@@ -84,7 +83,6 @@ from src.models.request import (
     TokenCountResponse,
 )
 from src.utils.helpers import log_request_beautifully
-import litellm
 
 # Initialize FastAPI app
 app = FastAPI()

@@ -36,29 +36,64 @@ class OpenAIProvider(BaseProvider):
                 if system_text:
                     messages.append({"role": "system", "content": system_text.strip()})
 
-        # Add conversation messages - flatten content blocks for OpenAI
+        # Add conversation messages with proper tool handling
         for msg in anthropic_request.messages:
             content = msg.content
             if isinstance(content, str):
                 m = {"role": msg.role, "content": content}
                 messages.append(m)
             else:
-                # Flatten content blocks to string for OpenAI
+                # Helper to get block type
+                def _block_type(b):
+                    return getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+
+                # user with only tool_result -> role "tool" messages
+                is_only_tool_result = (
+                    msg.role == "user"
+                    and len(content) > 0
+                    and all(_block_type(b) == "tool_result" for b in content)
+                )
+                if is_only_tool_result:
+                    for block in content:
+                        bid = getattr(block, "tool_use_id", None) or (block.get("tool_use_id") if isinstance(block, dict) else "")
+                        bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                        flat = self._parse_tool_result_content(bcontent)
+                        messages.append({"role": "tool", "tool_call_id": bid, "content": flat})
+                    continue
+
+                # assistant with list content -> content string + tool_calls
+                if msg.role == "assistant" and isinstance(content, list):
+                    text_parts = []
+                    tool_calls = []
+                    for block in content:
+                        btype = _block_type(block)
+                        if btype == "text":
+                            t = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else "")
+                            text_parts.append(t)
+                        elif btype == "tool_use":
+                            bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
+                            bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
+                            binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
+                            args = json.dumps(binput) if isinstance(binput, dict) else str(binput)
+                            tool_calls.append({"id": bid, "type": "function", "function": {"name": bname, "arguments": args}})
+                    m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else None}
+                    if tool_calls:
+                        m["tool_calls"] = tool_calls
+                    messages.append(m)
+                    continue
+
+                # Regular handling for other message types - flatten to text
                 text_content = ""
                 for block in content:
-                    block_type = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
-                    if block_type == "text":
+                    btype = _block_type(block)
+                    if btype == "text":
                         t = getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
                         text_content += t + "\n"
-                    elif block_type == "tool_result":
+                    elif btype == "tool_result":
                         tool_id = getattr(block, "tool_use_id", None) or (block.get("tool_use_id", "") if isinstance(block, dict) else "")
                         bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
                         text_content += f"Tool result for {tool_id}:\n{self._parse_tool_result_content(bcontent)}\n"
-                    elif block_type == "tool_use":
-                        bname = getattr(block, "name", None) or (block.get("name", "") if isinstance(block, dict) else "")
-                        binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
-                        text_content += f"[Tool: {bname}]\n{self._to_json(binput)}\n\n"
-                    elif block_type == "image":
+                    elif btype == "image":
                         text_content += "[Image]\n"
 
                 m = {"role": msg.role, "content": text_content.strip() or "..."}
@@ -122,38 +157,38 @@ class OpenAIProvider(BaseProvider):
         if content_text and content_text != "":
             content.append({"type": "text", "text": content_text})
 
-        # Convert tool calls to text format for non-Anthropic models
+        # Convert tool calls to proper Anthropic tool_use blocks
         if tool_calls:
-            tool_text = "\n\nTool usage:\n"
             if not isinstance(tool_calls, list):
                 tool_calls = [tool_calls]
 
             for tool_call in tool_calls:
                 if isinstance(tool_call, dict):
                     function = tool_call.get("function", {})
+                    tool_id = tool_call.get("id", f"tool_{uuid.uuid4()}")
                     name = function.get("name", "")
                     arguments = function.get("arguments", "{}")
                 else:
                     function = getattr(tool_call, "function", None)
+                    tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
                     name = getattr(function, "name", "") if function else ""
                     arguments = getattr(function, "arguments", "{}") if function else "{}"
 
+                # Parse arguments to dict
                 if isinstance(arguments, str):
                     try:
                         args_dict = json.loads(arguments)
-                        arguments_str = json.dumps(args_dict, indent=2)
                     except json.JSONDecodeError:
-                        arguments_str = arguments
+                        args_dict = {"raw": arguments}
                 else:
-                    arguments_str = json.dumps(arguments, indent=2)
+                    args_dict = arguments
 
-                tool_text += f"Tool: {name}\nArguments: {arguments_str}\n\n"
-
-            # Append tool text to content
-            if content and content[0]["type"] == "text":
-                content[0]["text"] += tool_text
-            else:
-                content.append({"type": "text", "text": tool_text})
+                content.append({
+                    "type": "tool_use",
+                    "id": tool_id,
+                    "name": name,
+                    "input": args_dict
+                })
 
         # Extract usage
         if isinstance(usage_info, dict):
@@ -204,6 +239,11 @@ class OpenAIProvider(BaseProvider):
         message_delta = {"stop_reason": None, "usage": None}
         accumulated_text = ""
         text_block_closed = False
+        tool_calls_started = False
+        next_block_index = 1
+        current_tool_index = None
+        current_tool_id = None
+        current_tool_content = ""
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -220,18 +260,65 @@ class OpenAIProvider(BaseProvider):
                 delta = choice.get('delta', {})
                 finish_reason = choice.get('finish_reason')
 
-            # Extract delta content
+            # Extract delta content and tool calls
             delta_content = None
+            delta_tool_calls = None
+
             if delta:
                 if hasattr(delta, 'content'):
                     delta_content = delta.content
                 elif isinstance(delta, dict):
                     delta_content = delta.get('content')
 
-            # Process text content
-            if delta_content and delta_content != "":
+                if hasattr(delta, 'tool_calls'):
+                    delta_tool_calls = delta.tool_calls
+                elif isinstance(delta, dict):
+                    delta_tool_calls = delta.get('tool_calls')
+
+            # Handle tool calls
+            if delta_tool_calls:
+                if not tool_calls_started:
+                    # Close text block first
+                    if not text_block_closed:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+                        text_block_closed = True
+                    tool_calls_started = True
+
+                if not isinstance(delta_tool_calls, list):
+                    delta_tool_calls = [delta_tool_calls]
+
+                for tool_call in delta_tool_calls:
+                    if isinstance(tool_call, dict):
+                        function = tool_call.get('function', {})
+                        tool_id = tool_call.get('id')
+                        name = function.get('name')
+                        arguments = function.get('arguments')
+                    else:
+                        function = getattr(tool_call, 'function', None)
+                        tool_id = getattr(tool_call, 'id', None)
+                        name = getattr(function, 'name', None) if function else None
+                        arguments = getattr(function, 'arguments', None) if function else None
+
+                    # New tool - emit content_block_start
+                    if tool_id and tool_id != current_tool_id:
+                        if current_tool_id:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name or '', 'input': {}}})}\n\n"
+                        current_tool_id = tool_id
+                        current_tool_content = ""
+                        current_tool_index = next_block_index
+                        next_block_index += 1
+
+                    # Emit tool arguments
+                    if arguments:
+                        current_tool_content += arguments if isinstance(arguments, str) else str(arguments)
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_tool_index, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
+
+            # Process text content (skip when tool_calls started)
+            if delta_content and delta_content != "" and not tool_calls_started:
                 if text_block_closed:
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 1, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    next_block_index += 1
                     text_block_closed = False
                 accumulated_text += delta_content
                 yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
@@ -247,7 +334,11 @@ class OpenAIProvider(BaseProvider):
                 }
                 stop_reason = stop_reason_map.get(finish_reason, "end_turn")
 
-                if not text_block_closed:
+                # Close any open blocks
+                if tool_calls_started and current_tool_id:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+
+                if not text_block_closed and not tool_calls_started:
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
                     text_block_closed = True
 
@@ -258,7 +349,9 @@ class OpenAIProvider(BaseProvider):
 
         # If we didn't get a finish_reason, close the response
         if not message_delta["stop_reason"]:
-            if not text_block_closed:
+            if tool_calls_started and current_tool_id:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_tool_index})}\n\n"
+            if not text_block_closed and not tool_calls_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
             yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
             yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"

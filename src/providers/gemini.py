@@ -1,4 +1,5 @@
 """Google Gemini provider implementation."""
+
 from typing import Dict, Any, Optional, AsyncIterator, Union
 import logging
 import json
@@ -14,7 +15,9 @@ class GeminiProvider(BaseProvider):
     def get_model_prefix(self) -> str:
         return "gemini/"
 
-    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Convert with Gemini schema cleaning."""
         # Import MessagesRequest type here to avoid circular import
         from ..models.request import MessagesRequest
@@ -29,7 +32,7 @@ class GeminiProvider(BaseProvider):
             elif isinstance(anthropic_request.system, list):
                 system_text = ""
                 for block in anthropic_request.system:
-                    if hasattr(block, 'type') and block.type == "text":
+                    if hasattr(block, "type") and block.type == "text":
                         system_text += block.text + "\n\n"
                     elif isinstance(block, dict) and block.get("type") == "text":
                         system_text += block.get("text", "") + "\n\n"
@@ -45,7 +48,9 @@ class GeminiProvider(BaseProvider):
             else:
                 # Helper to get block type
                 def _block_type(b):
-                    return getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+                    return getattr(b, "type", None) or (
+                        b.get("type") if isinstance(b, dict) else None
+                    )
 
                 # user with only tool_result -> role "tool" messages
                 is_only_tool_result = (
@@ -55,10 +60,18 @@ class GeminiProvider(BaseProvider):
                 )
                 if is_only_tool_result:
                     for block in content:
-                        bid = getattr(block, "tool_use_id", None) or (block.get("tool_use_id") if isinstance(block, dict) else "")
-                        bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                        bid = getattr(block, "tool_use_id", None) or (
+                            block.get("tool_use_id") if isinstance(block, dict) else ""
+                        )
+                        bcontent = (
+                            getattr(block, "content", None)
+                            if not isinstance(block, dict)
+                            else block.get("content")
+                        )
                         flat = self._parse_tool_result_content(bcontent)
-                        messages.append({"role": "tool", "tool_call_id": bid, "content": flat})
+                        messages.append(
+                            {"role": "tool", "tool_call_id": bid, "content": flat}
+                        )
                     continue
 
                 # assistant with list content -> content string + tool_calls
@@ -68,15 +81,38 @@ class GeminiProvider(BaseProvider):
                     for block in content:
                         btype = _block_type(block)
                         if btype == "text":
-                            t = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else "")
+                            t = getattr(block, "text", None) or (
+                                block.get("text") if isinstance(block, dict) else ""
+                            )
                             text_parts.append(t)
                         elif btype == "tool_use":
-                            bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
-                            bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
-                            binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
-                            args = json.dumps(binput) if isinstance(binput, dict) else str(binput)
-                            tool_calls.append({"id": bid, "type": "function", "function": {"name": bname, "arguments": args}})
-                    m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else None}
+                            bid = getattr(block, "id", None) or (
+                                block.get("id") if isinstance(block, dict) else ""
+                            )
+                            bname = getattr(block, "name", None) or (
+                                block.get("name") if isinstance(block, dict) else ""
+                            )
+                            binput = getattr(block, "input", None) or (
+                                block.get("input", {})
+                                if isinstance(block, dict)
+                                else {}
+                            )
+                            args = (
+                                json.dumps(binput)
+                                if isinstance(binput, dict)
+                                else str(binput)
+                            )
+                            tool_calls.append(
+                                {
+                                    "id": bid,
+                                    "type": "function",
+                                    "function": {"name": bname, "arguments": args},
+                                }
+                            )
+                    m = {
+                        "role": "assistant",
+                        "content": "\n".join(text_parts) if text_parts else None,
+                    }
                     if tool_calls:
                         m["tool_calls"] = tool_calls
                     messages.append(m)
@@ -87,11 +123,21 @@ class GeminiProvider(BaseProvider):
                 for block in content:
                     btype = _block_type(block)
                     if btype == "text":
-                        t = getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
+                        t = getattr(block, "text", None) or (
+                            block.get("text", "") if isinstance(block, dict) else ""
+                        )
                         text_content += t + "\n"
                     elif btype == "tool_result":
-                        tool_id = getattr(block, "tool_use_id", None) or (block.get("tool_use_id", "") if isinstance(block, dict) else "")
-                        bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                        tool_id = getattr(block, "tool_use_id", None) or (
+                            block.get("tool_use_id", "")
+                            if isinstance(block, dict)
+                            else ""
+                        )
+                        bcontent = (
+                            getattr(block, "content", None)
+                            if not isinstance(block, dict)
+                            else block.get("content")
+                        )
                         text_content += f"Tool result for {tool_id}:\n{self._parse_tool_result_content(bcontent)}\n"
                     elif btype == "image":
                         text_content += "[Image]\n"
@@ -123,17 +169,23 @@ class GeminiProvider(BaseProvider):
         if anthropic_request.tools:
             litellm_request["tools"] = self._convert_tools(anthropic_request.tools)
             if anthropic_request.tool_choice:
-                litellm_request["tool_choice"] = self._convert_tool_choice(anthropic_request.tool_choice)
+                litellm_request["tool_choice"] = self._convert_tool_choice(
+                    anthropic_request.tool_choice
+                )
 
         return litellm_request
 
-    def prepare_streaming_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_streaming_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Same as prepare_request but with stream=True."""
         req = self.prepare_request(anthropic_request)
         req["stream"] = True
         return req
 
-    def convert_response(self, litellm_response: Union[Dict, Any], original_request: Any) -> Any:
+    def convert_response(
+        self, litellm_response: Union[Dict, Any], original_request: Any
+    ) -> Any:
         """Convert Gemini response to Anthropic format."""
         from ..models.request import MessagesResponse, Usage
         import uuid
@@ -146,7 +198,11 @@ class GeminiProvider(BaseProvider):
         message = choices[0].get("message", {}) if choices and len(choices) > 0 else {}
         content_text = message.get("content", "")
         tool_calls = message.get("tool_calls", None)
-        finish_reason = choices[0].get("finish_reason", "stop") if choices and len(choices) > 0 else "stop"
+        finish_reason = (
+            choices[0].get("finish_reason", "stop")
+            if choices and len(choices) > 0
+            else "stop"
+        )
         usage_info = response_dict.get("usage", {})
         response_id = response_dict.get("id", f"msg_{uuid.uuid4()}")
 
@@ -172,7 +228,9 @@ class GeminiProvider(BaseProvider):
                     function = getattr(tool_call, "function", None)
                     tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
                     name = getattr(function, "name", "") if function else ""
-                    arguments = getattr(function, "arguments", "{}") if function else "{}"
+                    arguments = (
+                        getattr(function, "arguments", "{}") if function else "{}"
+                    )
 
                 # Parse arguments to dict
                 if isinstance(arguments, str):
@@ -183,12 +241,14 @@ class GeminiProvider(BaseProvider):
                 else:
                     args_dict = arguments
 
-                content.append({
-                    "type": "tool_use",
-                    "id": tool_id,
-                    "name": name,
-                    "input": args_dict
-                })
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": name,
+                        "input": args_dict,
+                    }
+                )
 
         # Extract usage
         if isinstance(usage_info, dict):
@@ -217,13 +277,12 @@ class GeminiProvider(BaseProvider):
             role="assistant",
             content=content,
             stop_reason=stop_reason,
-            usage=Usage(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens
-            )
+            usage=Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens),
         )
 
-    async def stream_response(self, litellm_generator: AsyncIterator) -> AsyncIterator[str]:
+    async def stream_response(
+        self, litellm_generator: AsyncIterator
+    ) -> AsyncIterator[str]:
         """Stream in Anthropic SSE format."""
         import json
         import uuid
@@ -240,8 +299,8 @@ class GeminiProvider(BaseProvider):
                 "model": "claude-sonnet-4-20250514",
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 1}
-            }
+                "usage": {"input_tokens": 0, "output_tokens": 1},
+            },
         }
         yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
@@ -268,29 +327,29 @@ class GeminiProvider(BaseProvider):
             delta = None
             finish_reason = None
 
-            if hasattr(chunk, 'choices') and chunk.choices:
+            if hasattr(chunk, "choices") and chunk.choices:
                 choice = chunk.choices[0]
-                delta = getattr(choice, 'delta', None)
-                finish_reason = getattr(choice, 'finish_reason', None)
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None)
             elif isinstance(chunk, dict):
-                choice = chunk.get('choices', [{}])[0] if chunk.get('choices') else {}
-                delta = choice.get('delta', {})
-                finish_reason = choice.get('finish_reason')
+                choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason")
 
             # Extract delta content and tool calls
             delta_content = None
             delta_tool_calls = None
 
             if delta:
-                if hasattr(delta, 'content'):
+                if hasattr(delta, "content"):
                     delta_content = delta.content
                 elif isinstance(delta, dict):
-                    delta_content = delta.get('content')
+                    delta_content = delta.get("content")
 
-                if hasattr(delta, 'tool_calls'):
+                if hasattr(delta, "tool_calls"):
                     delta_tool_calls = delta.tool_calls
                 elif isinstance(delta, dict):
-                    delta_tool_calls = delta.get('tool_calls')
+                    delta_tool_calls = delta.get("tool_calls")
 
             # Handle tool calls
             if delta_tool_calls:
@@ -307,17 +366,19 @@ class GeminiProvider(BaseProvider):
                 for tool_call in delta_tool_calls:
                     # Extract tool call data - use 'index' to identify which tool
                     if isinstance(tool_call, dict):
-                        tc_index = tool_call.get('index', 0)
-                        function = tool_call.get('function', {})
-                        tool_id = tool_call.get('id')
-                        name = function.get('name') if function else None
-                        arguments = function.get('arguments') if function else None
+                        tc_index = tool_call.get("index", 0)
+                        function = tool_call.get("function", {})
+                        tool_id = tool_call.get("id")
+                        name = function.get("name") if function else None
+                        arguments = function.get("arguments") if function else None
                     else:
-                        tc_index = getattr(tool_call, 'index', 0)
-                        function = getattr(tool_call, 'function', None)
-                        tool_id = getattr(tool_call, 'id', None)
-                        name = getattr(function, 'name', None) if function else None
-                        arguments = getattr(function, 'arguments', None) if function else None
+                        tc_index = getattr(tool_call, "index", 0)
+                        function = getattr(tool_call, "function", None)
+                        tool_id = getattr(tool_call, "id", None)
+                        name = getattr(function, "name", None) if function else None
+                        arguments = (
+                            getattr(function, "arguments", None) if function else None
+                        )
 
                     # Handle negative indices (e.g., when NVIDIA NIM returns -1)
                     if tc_index < 0:
@@ -338,7 +399,9 @@ class GeminiProvider(BaseProvider):
                     # Emit tool arguments
                     if arguments:
                         block_idx = tool_index_to_block[tc_index]
-                        tool_index_to_content[tc_index] += arguments if isinstance(arguments, str) else str(arguments)
+                        tool_index_to_content[tc_index] += (
+                            arguments if isinstance(arguments, str) else str(arguments)
+                        )
                         yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
 
             # Process text content (skip when tool_calls started)
@@ -411,6 +474,7 @@ class GeminiProvider(BaseProvider):
                     else:
                         try:
                             import json
+
                             result += json.dumps(item) + "\n"
                         except:
                             result += str(item) + "\n"
@@ -425,6 +489,7 @@ class GeminiProvider(BaseProvider):
                 return content.get("text", "")
             try:
                 import json
+
                 return json.dumps(content)
             except:
                 return str(content)
@@ -437,6 +502,7 @@ class GeminiProvider(BaseProvider):
         """Safely convert object to JSON string."""
         try:
             import json
+
             return json.dumps(obj)
         except:
             return str(obj)
@@ -445,7 +511,7 @@ class GeminiProvider(BaseProvider):
         """Convert Anthropic tools to OpenAI function format with schema cleaning."""
         openai_tools = []
         for tool in tools:
-            if hasattr(tool, 'dict'):
+            if hasattr(tool, "dict"):
                 tool_dict = tool.dict()
             else:
                 try:
@@ -462,8 +528,8 @@ class GeminiProvider(BaseProvider):
                 "function": {
                     "name": tool_dict["name"],
                     "description": tool_dict.get("description", ""),
-                    "parameters": input_schema
-                }
+                    "parameters": input_schema,
+                },
             }
             openai_tools.append(openai_tool)
         return openai_tools
@@ -478,9 +544,12 @@ class GeminiProvider(BaseProvider):
             # Check for unsupported 'format' in string types
             if schema.get("type") == "string" and "format" in schema:
                 import json
+
                 allowed_formats = {"enum", "date-time"}
                 if schema["format"] not in allowed_formats:
-                    logger.debug(f"Removing unsupported format '{schema['format']}' for string type in Gemini schema.")
+                    logger.debug(
+                        f"Removing unsupported format '{schema['format']}' for string type in Gemini schema."
+                    )
                     schema.pop("format")
 
             # Recursively clean nested schemas
@@ -492,7 +561,7 @@ class GeminiProvider(BaseProvider):
 
     def _convert_tool_choice(self, tool_choice):
         """Convert Anthropic tool_choice to OpenAI format."""
-        if hasattr(tool_choice, 'dict'):
+        if hasattr(tool_choice, "dict"):
             tool_choice_dict = tool_choice.dict()
         else:
             tool_choice_dict = tool_choice
@@ -503,18 +572,17 @@ class GeminiProvider(BaseProvider):
         elif choice_type == "any":
             return "any"
         elif choice_type == "tool" and "name" in tool_choice_dict:
-            return {
-                "type": "function",
-                "function": {"name": tool_choice_dict["name"]}
-            }
+            return {"type": "function", "function": {"name": tool_choice_dict["name"]}}
         return "auto"
 
     def _extract_response_dict(self, response) -> Dict[str, Any]:
         """Extract dict from various response types."""
         if isinstance(response, dict):
             return response
-        if hasattr(response, 'model_dump') and callable(getattr(response, 'model_dump')):
+        if hasattr(response, "model_dump") and callable(
+            getattr(response, "model_dump")
+        ):
             return response.model_dump()
-        if hasattr(response, 'dict') and callable(getattr(response, 'dict')):
+        if hasattr(response, "dict") and callable(getattr(response, "dict")):
             return response.dict()
-        return response.__dict__ if hasattr(response, '__dict__') else {}
+        return response.__dict__ if hasattr(response, "__dict__") else {}

@@ -1,4 +1,5 @@
 """Anthropic Claude provider implementation."""
+
 from typing import Dict, Any, Optional, AsyncIterator, Union
 import logging
 import json
@@ -14,7 +15,9 @@ class AnthropicProvider(BaseProvider):
     def get_model_prefix(self) -> str:
         return "anthropic/"
 
-    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Native Anthropic format - minimal conversion."""
         # Import MessagesRequest type here to avoid circular import
         from ..models.request import MessagesRequest
@@ -52,17 +55,23 @@ class AnthropicProvider(BaseProvider):
         if anthropic_request.tools:
             litellm_request["tools"] = self._convert_tools(anthropic_request.tools)
             if anthropic_request.tool_choice:
-                litellm_request["tool_choice"] = self._convert_tool_choice(anthropic_request.tool_choice)
+                litellm_request["tool_choice"] = self._convert_tool_choice(
+                    anthropic_request.tool_choice
+                )
 
         return litellm_request
 
-    def prepare_streaming_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_streaming_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Same as prepare_request but with stream=True."""
         req = self.prepare_request(anthropic_request)
         req["stream"] = True
         return req
 
-    def convert_response(self, litellm_response: Union[Dict, Any], original_request: Any) -> Any:
+    def convert_response(
+        self, litellm_response: Union[Dict, Any], original_request: Any
+    ) -> Any:
         """Convert Anthropic-style response (may already be in Anthropic format)."""
         from ..models.request import MessagesResponse, Usage
         import uuid
@@ -77,7 +86,11 @@ class AnthropicProvider(BaseProvider):
         content_list = message.get("content", [])
         content_text = message.get("content", "")
         tool_calls = message.get("tool_calls", None)
-        finish_reason = choices[0].get("finish_reason", "stop") if choices and len(choices) > 0 else "stop"
+        finish_reason = (
+            choices[0].get("finish_reason", "stop")
+            if choices and len(choices) > 0
+            else "stop"
+        )
         usage_info = response_dict.get("usage", {})
         response_id = response_dict.get("id", f"msg_{uuid.uuid4()}")
 
@@ -99,7 +112,7 @@ class AnthropicProvider(BaseProvider):
         if tool_calls:
             clean_model = original_request.model
             if clean_model.startswith("anthropic/"):
-                clean_model = clean_model[len("anthropic/"):]
+                clean_model = clean_model[len("anthropic/") :]
 
             is_claude_model = clean_model.startswith("claude-")
 
@@ -117,7 +130,9 @@ class AnthropicProvider(BaseProvider):
                         function = getattr(tool_call, "function", None)
                         tool_id = getattr(tool_call, "id", f"tool_{uuid.uuid4()}")
                         name = getattr(function, "name", "") if function else ""
-                        arguments = getattr(function, "arguments", {}) if function else {}
+                        arguments = (
+                            getattr(function, "arguments", {}) if function else {}
+                        )
 
                     # Convert string arguments to dict if needed
                     if isinstance(arguments, str):
@@ -126,12 +141,14 @@ class AnthropicProvider(BaseProvider):
                         except json.JSONDecodeError:
                             arguments = {"raw": arguments}
 
-                    content.append({
-                        "type": "tool_use",
-                        "id": tool_id,
-                        "name": name,
-                        "input": arguments
-                    })
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": name,
+                            "input": arguments,
+                        }
+                    )
 
         # Extract usage
         if isinstance(usage_info, dict):
@@ -160,13 +177,12 @@ class AnthropicProvider(BaseProvider):
             role="assistant",
             content=content,
             stop_reason=stop_reason,
-            usage=Usage(
-                input_tokens=prompt_tokens,
-                output_tokens=completion_tokens
-            )
+            usage=Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens),
         )
 
-    async def stream_response(self, litellm_generator: AsyncIterator, model: str = "claude-sonnet-4-20250514") -> AsyncIterator[str]:
+    async def stream_response(
+        self, litellm_generator: AsyncIterator, model: str = "claude-sonnet-4-20250514"
+    ) -> AsyncIterator[str]:
         """Stream in Anthropic SSE format."""
         import json
         import uuid
@@ -183,8 +199,8 @@ class AnthropicProvider(BaseProvider):
                 "model": model,
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 1}
-            }
+                "usage": {"input_tokens": 0, "output_tokens": 1},
+            },
         }
         yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
@@ -209,29 +225,29 @@ class AnthropicProvider(BaseProvider):
             delta = None
             finish_reason = None
 
-            if hasattr(chunk, 'choices') and chunk.choices:
+            if hasattr(chunk, "choices") and chunk.choices:
                 choice = chunk.choices[0]
-                delta = getattr(choice, 'delta', None)
-                finish_reason = getattr(choice, 'finish_reason', None)
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None)
             elif isinstance(chunk, dict):
-                choice = chunk.get('choices', [{}])[0] if chunk.get('choices') else {}
-                delta = choice.get('delta', {})
-                finish_reason = choice.get('finish_reason')
+                choice = chunk.get("choices", [{}])[0] if chunk.get("choices") else {}
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason")
 
             # Extract delta content
             delta_content = None
             delta_tool_calls = None
 
             if delta:
-                if hasattr(delta, 'content'):
+                if hasattr(delta, "content"):
                     delta_content = delta.content
                 elif isinstance(delta, dict):
-                    delta_content = delta.get('content')
+                    delta_content = delta.get("content")
 
-                if hasattr(delta, 'tool_calls'):
+                if hasattr(delta, "tool_calls"):
                     delta_tool_calls = delta.tool_calls
                 elif isinstance(delta, dict):
-                    delta_tool_calls = delta.get('tool_calls')
+                    delta_tool_calls = delta.get("tool_calls")
 
             # Handle tool calls
             if delta_tool_calls:
@@ -248,17 +264,19 @@ class AnthropicProvider(BaseProvider):
                 for tool_call in delta_tool_calls:
                     # Extract tool call data - use 'index' to identify which tool
                     if isinstance(tool_call, dict):
-                        tc_index = tool_call.get('index', 0)
-                        function = tool_call.get('function', {})
-                        tool_id = tool_call.get('id')
-                        name = function.get('name') if function else None
-                        arguments = function.get('arguments') if function else None
+                        tc_index = tool_call.get("index", 0)
+                        function = tool_call.get("function", {})
+                        tool_id = tool_call.get("id")
+                        name = function.get("name") if function else None
+                        arguments = function.get("arguments") if function else None
                     else:
-                        tc_index = getattr(tool_call, 'index', 0)
-                        function = getattr(tool_call, 'function', None)
-                        tool_id = getattr(tool_call, 'id', None)
-                        name = getattr(function, 'name', None) if function else None
-                        arguments = getattr(function, 'arguments', None) if function else None
+                        tc_index = getattr(tool_call, "index", 0)
+                        function = getattr(tool_call, "function", None)
+                        tool_id = getattr(tool_call, "id", None)
+                        name = getattr(function, "name", None) if function else None
+                        arguments = (
+                            getattr(function, "arguments", None) if function else None
+                        )
 
                     # New tool - emit content_block_start
                     if tc_index not in tool_index_to_block:
@@ -274,7 +292,9 @@ class AnthropicProvider(BaseProvider):
                     # Emit tool arguments
                     if arguments:
                         block_idx = tool_index_to_block[tc_index]
-                        tool_index_to_content[tc_index] += arguments if isinstance(arguments, str) else str(arguments)
+                        tool_index_to_content[tc_index] += (
+                            arguments if isinstance(arguments, str) else str(arguments)
+                        )
                         yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
 
             # Process text content
@@ -366,21 +386,23 @@ class AnthropicProvider(BaseProvider):
         """Keep Anthropic format tools as-is."""
         converted = []
         for tool in tools:
-            if hasattr(tool, 'dict'):
+            if hasattr(tool, "dict"):
                 tool_dict = tool.dict()
             else:
                 tool_dict = tool
 
-            converted.append({
-                "name": tool_dict["name"],
-                "description": tool_dict.get("description", ""),
-                "input_schema": tool_dict.get("input_schema", {})
-            })
+            converted.append(
+                {
+                    "name": tool_dict["name"],
+                    "description": tool_dict.get("description", ""),
+                    "input_schema": tool_dict.get("input_schema", {}),
+                }
+            )
         return converted
 
     def _convert_tool_choice(self, tool_choice):
         """Keep Anthropic format tool_choice as-is."""
-        if hasattr(tool_choice, 'dict'):
+        if hasattr(tool_choice, "dict"):
             return tool_choice.dict()
         return tool_choice
 
@@ -388,8 +410,10 @@ class AnthropicProvider(BaseProvider):
         """Extract dict from various response types."""
         if isinstance(response, dict):
             return response
-        if hasattr(response, 'model_dump') and callable(getattr(response, 'model_dump')):
+        if hasattr(response, "model_dump") and callable(
+            getattr(response, "model_dump")
+        ):
             return response.model_dump()
-        if hasattr(response, 'dict') and callable(getattr(response, 'dict')):
+        if hasattr(response, "dict") and callable(getattr(response, "dict")):
             return response.dict()
-        return response.__dict__ if hasattr(response, '__dict__') else {}
+        return response.__dict__ if hasattr(response, "__dict__") else {}

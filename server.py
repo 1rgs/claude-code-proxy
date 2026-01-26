@@ -377,11 +377,13 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             thinking=request_data.thinking,
         )
         if hasattr(provider, "prepare_request_async"):
-            litellm_request = await provider.prepare_request_async(temp_request)
+            litellm_request = await provider.prepare_request_async(
+                temp_request, count_towards_limit=False
+            )
         else:
             # Run sync method in thread pool to avoid blocking the event loop
             litellm_request = await asyncio.to_thread(
-                provider.prepare_request, temp_request
+                provider.prepare_request, temp_request, count_towards_limit=False
             )
 
         # Log beautifully (only for non-direct providers that return proper litellm_request)

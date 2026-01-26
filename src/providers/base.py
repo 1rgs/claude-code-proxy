@@ -1,4 +1,5 @@
 """Base provider interface for all LLM backends."""
+
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, AsyncIterator, Union
 from pydantic import BaseModel
@@ -6,6 +7,7 @@ from pydantic import BaseModel
 
 class ProviderConfig(BaseModel):
     """Configuration for a provider."""
+
     api_key: str
     base_url: Optional[str] = None
     rate_limit: Optional[int] = None  # requests per minute
@@ -27,22 +29,30 @@ class BaseProvider(ABC):
         pass
 
     @abstractmethod
-    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Converts Anthropic format request to provider-specific request."""
         pass
 
     @abstractmethod
-    def prepare_streaming_request(self, anthropic_request: Any) -> Dict[str, Any]:
+    def prepare_streaming_request(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
         """Converts Anthropic format request to provider-specific streaming request."""
         pass
 
     @abstractmethod
-    def convert_response(self, litellm_response: Union[Dict, Any], original_request: Any) -> Any:
+    def convert_response(
+        self, litellm_response: Union[Dict, Any], original_request: Any
+    ) -> Any:
         """Converts provider response to Anthropic format."""
         pass
 
     @abstractmethod
-    async def stream_response(self, litellm_generator: AsyncIterator) -> AsyncIterator[str]:
+    async def stream_response(
+        self, litellm_generator: AsyncIterator
+    ) -> AsyncIterator[str]:
         """Streams provider response in Anthropic SSE format."""
         pass
 

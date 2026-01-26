@@ -185,54 +185,78 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
 
         logger.debug(f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}")
 
-        # Configure LiteLLM for this provider
-        configure_litellm_for_provider(PREFERRED_PROVIDER)
+        # Check if this is a direct provider (bypasses LiteLLM)
+        is_direct_provider = hasattr(provider, 'stream_response_direct')
 
-        # Prepare request using provider (use async when available to avoid blocking rate limits)
-        if request_data.stream:
-            if hasattr(provider, 'prepare_streaming_request_async'):
-                litellm_request = await provider.prepare_streaming_request_async(request_data)
-            else:
-                litellm_request = provider.prepare_streaming_request(request_data)
-            response_generator = await litellm.acompletion(**litellm_request)
-
-            # Log beautifully
+        if is_direct_provider:
+            # Direct provider - bypasses LiteLLM entirely
             num_tools = len(request_data.tools) if request_data.tools else 0
             log_request_beautifully(
                 "POST",
                 raw_request.url.path,
                 display_model,
-                litellm_request.get('model'),
-                len(litellm_request['messages']),
+                request_data.model,
+                len(request_data.messages),
                 num_tools,
                 200
             )
 
-            return StreamingResponse(
-                provider.stream_response(response_generator),
-                media_type="text/event-stream"
-            )
+            if request_data.stream:
+                return StreamingResponse(
+                    provider.stream_response_direct(request_data),
+                    media_type="text/event-stream"
+                )
+            else:
+                response_json = await provider.call_api_direct(request_data)
+                return provider.convert_response_direct(response_json, request_data)
         else:
-            if hasattr(provider, 'prepare_request_async'):
-                litellm_request = await provider.prepare_request_async(request_data)
+            # Standard LiteLLM path
+            configure_litellm_for_provider(PREFERRED_PROVIDER)
+
+            if request_data.stream:
+                if hasattr(provider, 'prepare_streaming_request_async'):
+                    litellm_request = await provider.prepare_streaming_request_async(request_data)
+                else:
+                    litellm_request = provider.prepare_streaming_request(request_data)
+                response_generator = await litellm.acompletion(**litellm_request)
+
+                # Log beautifully
+                num_tools = len(request_data.tools) if request_data.tools else 0
+                log_request_beautifully(
+                    "POST",
+                    raw_request.url.path,
+                    display_model,
+                    litellm_request.get('model'),
+                    len(litellm_request['messages']),
+                    num_tools,
+                    200
+                )
+
+                return StreamingResponse(
+                    provider.stream_response(response_generator),
+                    media_type="text/event-stream"
+                )
             else:
-                litellm_request = provider.prepare_request(request_data)
-            litellm_response = await litellm.acompletion(**litellm_request)
-            anthropic_response = provider.convert_response(litellm_response, request_data)
+                if hasattr(provider, 'prepare_request_async'):
+                    litellm_request = await provider.prepare_request_async(request_data)
+                else:
+                    litellm_request = provider.prepare_request(request_data)
+                litellm_response = await litellm.acompletion(**litellm_request)
+                anthropic_response = provider.convert_response(litellm_response, request_data)
 
-            # Log beautifully
-            num_tools = len(request_data.tools) if request_data.tools else 0
-            log_request_beautifully(
-                "POST",
-                raw_request.url.path,
-                display_model,
-                litellm_request.get('model'),
-                len(litellm_request['messages']),
-                num_tools,
-                200
-            )
+                # Log beautifully
+                num_tools = len(request_data.tools) if request_data.tools else 0
+                log_request_beautifully(
+                    "POST",
+                    raw_request.url.path,
+                    display_model,
+                    litellm_request.get('model'),
+                    len(litellm_request['messages']),
+                    num_tools,
+                    200
+                )
 
-            return anthropic_response
+                return anthropic_response
 
     except Exception as e:
         import traceback

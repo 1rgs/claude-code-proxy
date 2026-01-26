@@ -28,8 +28,9 @@ litellm.failure_callback = []
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN,
+    level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.FileHandler("output.log")]
 )
 logger = logging.getLogger(__name__)
 

@@ -319,10 +319,9 @@ class NVIDIANIMProvider(BaseProvider):
         next_block_index = 1
         text_block_closed = True
         tool_calls_started = False
-        # Track multiple tool calls by their index
-        tool_index_to_block = {}  # tool index -> our block index
-        tool_index_to_id = {}  # tool index -> tool_id
-        tool_index_to_content = {}  # tool index -> accumulated arguments
+        # Track multiple tool calls by their tool_id (NIM returns index=-1 so we ignore it and use tool_id instead)
+        tool_id_to_block = {}  # tool_id -> our block index
+        tool_id_to_content = {}  # tool_id -> accumulated arguments
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -410,35 +409,33 @@ class NVIDIANIMProvider(BaseProvider):
                     delta_tool_calls = [delta_tool_calls]
 
                 for tool_call in delta_tool_calls:
-                    # Extract tool call data - use 'index' to identify which tool
+                    # Extract tool call data - use tool_id to identify which tool (NIM returns index=-1 so we ignore it)
                     if isinstance(tool_call, dict):
-                        tc_index = tool_call.get('index', 0)
                         function = tool_call.get('function', {})
                         tool_id = tool_call.get('id')
                         name = function.get('name') if function else None
                         arguments = function.get('arguments') if function else None
                     else:
-                        tc_index = getattr(tool_call, 'index', 0)
                         function = getattr(tool_call, 'function', None)
                         tool_id = getattr(tool_call, 'id', None)
                         name = getattr(function, 'name', None) if function else None
                         arguments = getattr(function, 'arguments', None) if function else None
 
+                    # Generate ID if not provided (NIM sometimes omits tool_id in early chunks)
+                    if not tool_id:
+                        tool_id = f"tool_{uuid.uuid4()}"
+
                     # New tool - emit content_block_start
-                    if tc_index not in tool_index_to_block:
-                        # Generate ID if not provided
-                        if not tool_id:
-                            tool_id = f"tool_{uuid.uuid4()}"
-                        tool_index_to_id[tc_index] = tool_id
-                        tool_index_to_block[tc_index] = next_block_index
-                        tool_index_to_content[tc_index] = ""
+                    if tool_id not in tool_id_to_block:
+                        tool_id_to_block[tool_id] = next_block_index
+                        tool_id_to_content[tool_id] = ""
                         yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name or '', 'input': {}}})}\n\n"
                         next_block_index += 1
 
                     # Emit tool arguments
                     if arguments:
-                        block_idx = tool_index_to_block[tc_index]
-                        tool_index_to_content[tc_index] += arguments if isinstance(arguments, str) else str(arguments)
+                        block_idx = tool_id_to_block[tool_id]
+                        tool_id_to_content[tool_id] += arguments if isinstance(arguments, str) else str(arguments)
                         yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': str(arguments)}})}\n\n"
 
             # Process reasoning_content if present (only if model returns it; skip when tool_calls started)
@@ -491,7 +488,7 @@ class NVIDIANIMProvider(BaseProvider):
                 stop_reason = stop_reason_map.get(finish_reason, "end_turn")
 
                 # Close any open tool blocks
-                for tc_index, block_idx in tool_index_to_block.items():
+                for tool_id, block_idx in tool_id_to_block.items():
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
                 if thinking_block_started:
                     yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
@@ -509,7 +506,7 @@ class NVIDIANIMProvider(BaseProvider):
         # If we didn't get a finish_reason, close any open blocks
         if not message_delta["stop_reason"]:
             # Close any open tool blocks
-            for tc_index, block_idx in tool_index_to_block.items():
+            for tool_id, block_idx in tool_id_to_block.items():
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
             if thinking_block_started:
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"

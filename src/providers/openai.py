@@ -246,6 +246,8 @@ class OpenAIProvider(BaseProvider):
         tool_index_to_block = {}  # OpenAI tool index -> our block index
         tool_index_to_id = {}  # OpenAI tool index -> tool_id
         tool_index_to_content = {}  # OpenAI tool index -> accumulated arguments
+        # Track fallback index generation for negative tool indices (e.g., when NVIDIA NIM returns -1)
+        next_tool_fallback_index = 0
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -303,6 +305,11 @@ class OpenAIProvider(BaseProvider):
                         tool_id = getattr(tool_call, 'id', None)
                         name = getattr(function, 'name', None) if function else None
                         arguments = getattr(function, 'arguments', None) if function else None
+
+                    # Handle negative indices (e.g., when NVIDIA NIM returns -1)
+                    if tc_index < 0:
+                        tc_index = next_tool_fallback_index
+                        next_tool_fallback_index += 1
 
                     # New tool - emit content_block_start
                     if tc_index not in tool_index_to_block:

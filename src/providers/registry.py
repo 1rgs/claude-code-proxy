@@ -6,6 +6,7 @@ from .openai import OpenAIProvider
 from .gemini import GeminiProvider
 from .anthropic import AnthropicProvider
 from .nvidia_nim import NVIDIANIMProvider
+from .nvidia_nim_direct import NVIDIANIMDirectProvider
 
 
 class ProviderRegistry:
@@ -16,6 +17,7 @@ class ProviderRegistry:
         "gemini": GeminiProvider,
         "anthropic": AnthropicProvider,
         "nvidia_nim": NVIDIANIMProvider,
+        "nvidia_nim_direct": NVIDIANIMDirectProvider,
     }
 
     @classmethod

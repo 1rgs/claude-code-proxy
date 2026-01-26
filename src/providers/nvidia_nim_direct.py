@@ -405,6 +405,8 @@ class NVIDIANIMDirectProvider(BaseProvider):
                     # 2. Handle Text Content
                     delta_content = delta.get("content")
                     if delta_content:
+                        # Log for debugging
+                        logger.debug(f"[DEBUG] NVIDIA DELTA CONTENT: {delta_content[:100] if isinstance(delta_content, str) else type(delta_content)}")
                         # Close thinking if it was open
                         if thinking_block_started:
                             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
@@ -523,7 +525,14 @@ class NVIDIANIMDirectProvider(BaseProvider):
             content.append({"type": "thinking", "thinking": reasoning})
 
         if message.get("content"):
-            content.append({"type": "text", "text": message["content"]})
+            raw_content = message["content"]
+            if isinstance(raw_content, str):
+                content.append({"type": "text", "text": raw_content})
+            elif isinstance(raw_content, list):
+                # Handle structured content: [{"type": "text", "text": "..."}]
+                for item in raw_content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        content.append(item)
 
         if message.get("tool_calls"):
             for tc in message["tool_calls"]:

@@ -352,8 +352,12 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             original_model.split("/")[-1] if "/" in original_model else original_model
         )
 
-        # Configure LiteLLM for this provider
-        configure_litellm_for_provider(PREFERRED_PROVIDER)
+        # Check if this is a direct provider (bypasses LiteLLM)
+        is_direct_provider = hasattr(provider, "stream_response_direct")
+
+        # Configure LiteLLM for this provider (only for non-direct providers)
+        if not is_direct_provider:
+            configure_litellm_for_provider(PREFERRED_PROVIDER)
 
         # Prepare request using provider (use async when available to avoid blocking rate limits)
         temp_request = MessagesRequest(
@@ -370,17 +374,18 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
         else:
             litellm_request = provider.prepare_request(temp_request)
 
-        # Log beautifully
-        num_tools = len(request_data.tools) if request_data.tools else 0
-        log_request_beautifully(
-            "POST",
-            raw_request.url.path,
-            display_model,
-            litellm_request.get("model"),
-            len(litellm_request["messages"]),
-            num_tools,
-            200,
-        )
+        # Log beautifully (only for non-direct providers that return proper litellm_request)
+        if not is_direct_provider:
+            num_tools = len(request_data.tools) if request_data.tools else 0
+            log_request_beautifully(
+                "POST",
+                raw_request.url.path,
+                display_model,
+                litellm_request.get("model"),
+                len(litellm_request["messages"]),
+                num_tools,
+                200,
+            )
 
         # Count tokens (run in thread to avoid blocking the event loop)
         token_count = await asyncio.to_thread(

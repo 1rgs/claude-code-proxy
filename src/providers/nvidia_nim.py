@@ -1,0 +1,570 @@
+"""NVIDIA NIM provider with full pass-through and dynamic response parsing."""
+import logging
+from collections import deque
+import threading
+import time
+import os
+from typing import Dict, Any, Optional, AsyncIterator, Union
+
+from .base import BaseProvider, ProviderConfig
+
+logger = logging.getLogger(__name__)
+
+
+class NVIDIANIMProvider(BaseProvider):
+    """NVIDIA NIM provider with full pass-through and dynamic response parsing."""
+
+    # Rate limiting: shared across all NIM requests
+    _rate_lock = threading.Condition()
+    _request_timestamps = deque()
+
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        self._nim_params = self._load_nim_params()
+        # Override model for NIM (add nvidia_nim/ prefix for LiteLLM)
+        self._model_prefix = "nvidia_nim/"
+
+    def _load_nim_params(self) -> Dict[str, Any]:
+        """Load useful NIM parameters from environment variables."""
+        params: Dict[str, Any] = {}
+
+        # Core parameters
+        if val := os.getenv("NVIDIA_NIM_TEMPERATURE"):
+            params["temperature"] = float(val)
+        if val := os.getenv("NVIDIA_NIM_TOP_P"):
+            params["top_p"] = float(val)
+        if val := os.getenv("NVIDIA_NIM_TOP_K"):
+            params["top_k"] = int(val)
+        if val := os.getenv("NVIDIA_NIM_MAX_TOKENS"):
+            params["max_tokens"] = int(val)
+        if val := os.getenv("NVIDIA_NIM_PRESENCE_PENALTY"):
+            params["presence_penalty"] = float(val)
+        if val := os.getenv("NVIDIA_NIM_FREQUENCY_PENALTY"):
+            params["frequency_penalty"] = float(val)
+
+        # Advanced parameters
+        if val := os.getenv("NVIDIA_NIM_MIN_P"):
+            params["min_p"] = float(val)
+        if val := os.getenv("NVIDIA_NIM_REPETITION_PENALTY"):
+            params["repetition_penalty"] = float(val)
+        if val := os.getenv("NVIDIA_NIM_SEED"):
+            params["seed"] = int(val)
+        if val := os.getenv("NVIDIA_NIM_STOP"):
+            if val.lower() != "none":
+                params["stop"] = val.split(",") if "," in val else val
+
+        # Flag parameters
+        if val := os.getenv("NVIDIA_NIM_PARALLEL_TOOL_CALLS"):
+            params["parallel_tool_calls"] = val.lower() == "true"
+        if val := os.getenv("NVIDIA_NIM_RETURN_TOKENS_AS_TOKEN_IDS"):
+            params["return_tokens_as_token_ids"] = val.lower() == "true"
+        if val := os.getenv("NVIDIA_NIM_INCLUDE_STOP_STR_IN_OUTPUT"):
+            params["include_stop_str_in_output"] = val.lower() == "true"
+        if val := os.getenv("NVIDIA_NIM_IGNORE_EOS"):
+            params["ignore_eos"] = val.lower() == "true"
+        if val := os.getenv("NVIDIA_NIM_MIN_TOKENS"):
+            params["min_tokens"] = int(val)
+
+        # String parameters
+        if val := os.getenv("NVIDIA_NIM_CHAT_TEMPLATE"):
+            params["chat_template"] = val
+        if val := os.getenv("NVIDIA_NIM_REQUEST_ID"):
+            params["request_id"] = val
+
+        # Thinking/reasoning (will be merged into extra_body)
+        extra_body = {}
+        if val := os.getenv("NVIDIA_NIM_REASONING_EFFORT"):
+            extra_body["reasoning_effort"] = val
+        if val := os.getenv("NVIDIA_NIM_INCLUDE_REASONING"):
+            extra_body["include_reasoning"] = val.lower() == "true"
+
+        if extra_body:
+            params["extra_body"] = extra_body
+
+        return params
+
+    def get_model_prefix(self) -> str:
+        return "nvidia_nim/"
+
+    def _enforce_rate_limit(self):
+        """Enforce configured rate limit (default 40 requests/minute)."""
+        rate_limit = self.config.rate_limit or 40
+        now = time.time()
+        with self._rate_lock:
+            while self._request_timestamps and now - self._request_timestamps[0] > self.config.rate_window:
+                self._request_timestamps.popleft()
+
+            while len(self._request_timestamps) >= rate_limit:
+                wait_time = self._request_timestamps[0] + self.config.rate_window - now
+                if wait_time <= 0:
+                    break
+                self._rate_lock.wait(wait_time)
+                now = time.time()
+                while self._request_timestamps and now - self._request_timestamps[0] > self.config.rate_window:
+                    self._request_timestamps.popleft()
+
+            self._request_timestamps.append(now)
+            logger.debug(f"NVIDIA NIM request recorded. Count: {len(self._request_timestamps)}/{rate_limit}")
+
+    def prepare_request(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Convert Anthropic format to NIM/OpenAI format with pass-through params."""
+        # Enforce rate limit
+        self._enforce_rate_limit()
+
+        # Core conversion (messages)
+        messages = self._convert_messages(anthropic_request.messages)
+
+        # Handle system message
+        if anthropic_request.system:
+            if isinstance(anthropic_request.system, str):
+                messages.insert(0, {"role": "system", "content": anthropic_request.system})
+            elif isinstance(anthropic_request.system, list):
+                system_text = ""
+                for block in anthropic_request.system:
+                    if hasattr(block, 'type') and block.type == "text":
+                        system_text += block.text + "\n\n"
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        system_text += block.get("text", "") + "\n\n"
+                if system_text:
+                    messages.insert(0, {"role": "system", "content": system_text.strip()})
+
+        # Start with standard request
+        litellm_request = {
+            "model": self._model_prefix + anthropic_request.model,  # Add nvidia_nim/ prefix
+            "messages": messages,
+            "max_tokens": anthropic_request.max_tokens,
+            "stream": False,
+        }
+
+        # Add optional params from original request (highest priority)
+        if anthropic_request.temperature is not None:
+            litellm_request["temperature"] = anthropic_request.temperature
+        if anthropic_request.top_p is not None:
+            litellm_request["top_p"] = anthropic_request.top_p
+        if anthropic_request.top_k is not None:
+            litellm_request["top_k"] = anthropic_request.top_k
+        if anthropic_request.stop_sequences:
+            litellm_request["stop"] = anthropic_request.stop_sequences
+
+        # Add tools if present
+        if anthropic_request.tools:
+            litellm_request["tools"] = self._convert_tools(anthropic_request.tools)
+            if anthropic_request.tool_choice:
+                litellm_request["tool_choice"] = self._convert_tool_choice(anthropic_request.tool_choice)
+
+        # MERGE: env-provided NIM params (lower priority than request params)
+        for key, val in self._nim_params.items():
+            if key != "extra_body" and key not in litellm_request:
+                litellm_request[key] = val
+
+        # MERGE: extra_body - user extra_body is highest priority, then env extra_body
+        user_extra_body = anthropic_request.extra_body.copy() if anthropic_request.extra_body else {}
+        env_extra_body = self._nim_params.get("extra_body", {})
+        if env_extra_body:
+            for key, val in env_extra_body.items():
+                if key not in user_extra_body:  # User-provided wins
+                    user_extra_body[key] = val
+
+        if user_extra_body:
+            litellm_request["extra_body"] = user_extra_body
+
+        return litellm_request
+
+    def prepare_streaming_request(self, anthropic_request: Any) -> Dict[str, Any]:
+        """Same as prepare_request but with stream=True."""
+        req = self.prepare_request(anthropic_request)
+        req["stream"] = True
+        return req
+
+    def convert_response(self, litellm_response: Union[Dict, Any], original_request: Any) -> Any:
+        """Convert NIM response to Anthropic format with dynamic parsing."""
+        from ..models.request import MessagesResponse, Usage
+        import uuid
+        import json
+
+        # Extract response data
+        response_dict = self._extract_response_dict(litellm_response)
+
+        choices = response_dict.get("choices", [{}])
+        message = choices[0].get("message", {}) if choices and len(choices) > 0 else {}
+        reasoning_content = message.get("reasoning_content")
+        content_text = message.get("content", "")
+        tool_calls = message.get("tool_calls")
+        finish_reason = choices[0].get("finish_reason", "stop") if choices and len(choices) > 0 else "stop"
+        usage_info = response_dict.get("usage", {})
+        response_id = response_dict.get("id", f"msg_{uuid.uuid4()}")
+
+        # Build Anthropic content blocks
+        content = []
+
+        # Prepend thinking block if reasoning_content is present (dynamic - only add if it exists)
+        if reasoning_content:
+            content.insert(0, {"type": "thinking", "thinking": reasoning_content})
+
+        # Add text content
+        if content_text:
+            content.append({"type": "text", "text": content_text})
+
+        # Handle tool calls (convert to Anthropic tool_use format)
+        if tool_calls:
+            if not isinstance(tool_calls, list):
+                tool_calls = [tool_calls]
+
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    tool_id = tc.get("id", f"tool_{tc.get('function', {}).get('name', '')}")
+                    tool_name = tc.get("function", {}).get("name", "")
+                    tool_args = tc.get("function", {}).get("arguments", "{}")
+                    try:
+                        args_dict = json.loads(tool_args) if isinstance(tool_args, str) else tool_args
+                    except:
+                        args_dict = {}
+                    content.append({
+                        "type": "tool_use",
+                        "id": tool_id,
+                        "name": tool_name,
+                        "input": args_dict
+                    })
+
+        # Ensure content is never empty
+        if not content:
+            content.append({"type": "text", "text": ""})
+
+        # Extract usage
+        if isinstance(usage_info, dict):
+            prompt_tokens = usage_info.get("prompt_tokens", 0)
+            completion_tokens = usage_info.get("completion_tokens", 0)
+        else:
+            prompt_tokens = getattr(usage_info, "prompt_tokens", 0)
+            completion_tokens = getattr(usage_info, "completion_tokens", 0)
+
+        # Map finish_reason
+        stop_reason_map = {
+            "stop": "end_turn",
+            "length": "max_tokens",
+            "tool_calls": "tool_use",
+            "content_filter": "stop_sequence",
+        }
+        stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+
+        return MessagesResponse(
+            id=response_id,
+            model=original_request.model,
+            role="assistant",
+            content=content,
+            stop_reason=stop_reason,
+            usage=Usage(
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens
+            ),
+            reasoning_content=reasoning_content  # Optional, only present if model supports it
+        )
+
+    async def stream_response(self, litellm_generator: AsyncIterator) -> AsyncIterator[str]:
+        """Stream NIM response with dynamic reasoning_content parsing."""
+        import json
+        import uuid
+
+        # Send message_start event
+        message_id = f"msg_{uuid.uuid4()}"
+        yield f"event: message_start\ndata: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant'}})}\n\n"
+
+        # Track state
+        message_delta = {"stop_reason": None, "usage": None}
+        accumulated_text = ""
+        accumulated_reasoning = ""
+        thinking_index = None
+        thinking_block_started = False
+        current_text_index = 0
+        next_block_index = 1
+        text_block_closed = True
+
+        async for chunk in litellm_generator:
+            # Extract choice and delta
+            choice = None
+            delta = None
+            finish_reason = None
+
+            if hasattr(chunk, 'choices') and chunk.choices:
+                choice = chunk.choices[0]
+                delta = getattr(choice, 'delta', None)
+                finish_reason = getattr(choice, 'finish_reason', None)
+            elif isinstance(chunk, dict):
+                choice = chunk.get('choices', [{}])[0] if chunk.get('choices') else {}
+                delta = choice.get('delta', {})
+                finish_reason = choice.get('finish_reason')
+
+            # Extract delta content and delta reasoning (DYNAMIC - parse whatever is present)
+            delta_content = None
+            delta_reasoning = None
+
+            if delta:
+                if hasattr(delta, 'content'):
+                    delta_content = delta.content
+                elif isinstance(delta, dict):
+                    delta_content = delta.get('content')
+
+                # DYNAMIC: Try to get reasoning_content if present
+                if hasattr(delta, 'reasoning_content'):
+                    delta_reasoning = delta.reasoning_content
+                elif isinstance(delta, dict):
+                    delta_reasoning = delta.get('reasoning_content')
+
+            # Process reasoning_content if present (only if model returns it)
+            if delta_reasoning:
+                if not thinking_block_started:
+                    if not text_block_closed:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                        text_block_closed = True
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                    thinking_index = next_block_index
+                    next_block_index += 1
+                    thinking_block_started = True
+                accumulated_reasoning += delta_reasoning
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
+
+                # If both reasoning and content in same chunk: close thinking, open text
+                if delta_content and delta_content != "":
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                    thinking_block_started = False
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    current_text_index = next_block_index
+                    next_block_index += 1
+                    text_block_closed = False
+
+            # Process text content
+            if delta_content and delta_content != "":
+                # Close thinking if still open
+                if thinking_block_started:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                    thinking_block_started = False
+
+                if text_block_closed:
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    current_text_index = next_block_index
+                    next_block_index += 1
+                    text_block_closed = False
+
+                accumulated_text += delta_content
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+
+            # Handle finish_reason
+            if finish_reason and not message_delta["stop_reason"]:
+                message_delta["stop_reason"] = finish_reason
+                stop_reason_map = {
+                    "stop": "end_turn",
+                    "length": "max_tokens",
+                    "tool_calls": "tool_use",
+                    "content_filter": "stop_sequence",
+                }
+                stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+
+                # Close any open blocks
+                if thinking_block_started:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                    thinking_block_started = False
+
+                if not text_block_closed:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                    text_block_closed = True
+
+                yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': None})}\n\n"
+                yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+                yield "[DONE]\n"
+                break
+
+        # If we didn't get a finish_reason, close any open blocks
+        if not message_delta["stop_reason"]:
+            if thinking_block_started:
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+            yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': 'end_turn', 'stop_sequence': None}, 'usage': None})}\n\n"
+            yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
+            yield "[DONE]\n"
+
+    def should_flatten_messages(self) -> bool:
+        return True
+
+    def supports_native_tool_results(self) -> bool:
+        return True
+
+    # Helper methods for message/tool conversion
+    def _convert_messages(self, messages) -> list:
+        """Convert Anthropic messages to OpenAI format with tool_result handling."""
+        converted = []
+
+        for msg in messages:
+            content = msg.content
+            if isinstance(content, str):
+                m = {"role": msg.role, "content": content}
+                converted.append(m)
+            else:
+                # Helper to get block type
+                def _block_type(b):
+                    return getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
+
+                # user with only tool_result -> role "tool" messages
+                is_only_tool_result = (
+                    msg.role == "user"
+                    and len(content) > 0
+                    and all(_block_type(b) == "tool_result" for b in content)
+                )
+                if is_only_tool_result:
+                    for block in content:
+                        bid = getattr(block, "tool_use_id", None) or (block.get("tool_use_id") if isinstance(block, dict) else "")
+                        bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                        flat = self._parse_tool_result_content(bcontent)
+                        converted.append({"role": "tool", "tool_call_id": bid, "content": flat})
+                    continue
+
+                # assistant with list content -> content string, tool_calls, reasoning_content
+                if msg.role == "assistant" and isinstance(content, list):
+                    text_parts = []
+                    tool_calls = []
+                    reasoning_parts = []
+                    for block in content:
+                        btype = _block_type(block)
+                        if btype == "text":
+                            t = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else "")
+                            text_parts.append(t)
+                        elif btype == "thinking":
+                            th = getattr(block, "thinking", None) or (block.get("thinking") if isinstance(block, dict) else "")
+                            reasoning_parts.append(th)
+                        elif btype == "tool_use":
+                            bid = getattr(block, "id", None) or (block.get("id") if isinstance(block, dict) else "")
+                            bname = getattr(block, "name", None) or (block.get("name") if isinstance(block, dict) else "")
+                            binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
+                            args = json.dumps(binput) if isinstance(binput, dict) else str(binput)
+                            tool_calls.append({"id": bid, "type": "function", "function": {"name": bname, "arguments": args}})
+                    m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else ""}
+                    if tool_calls:
+                        m["tool_calls"] = tool_calls
+                    reasoning_content = getattr(msg, "reasoning_content", None) or ("\n".join(reasoning_parts) if reasoning_parts else None)
+                    if reasoning_content:
+                        m["reasoning_content"] = reasoning_content
+                    if getattr(msg, "thinking_blocks", None):
+                        m["thinking_blocks"] = msg.thinking_blocks
+                    converted.append(m)
+                    continue
+
+                # Regular handling for other message types
+                text_content = ""
+                reasoning_parts = []
+                for block in content:
+                    btype = _block_type(block)
+                    if btype == "text":
+                        t = getattr(block, "text", None) or (block.get("text", "") if isinstance(block, dict) else "")
+                        text_content += t + "\n"
+                    elif btype == "thinking":
+                        th = getattr(block, "thinking", None) or (block.get("thinking") if isinstance(block, dict) else "")
+                        reasoning_parts.append(th)
+                    elif btype == "tool_use":
+                        binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
+                        text_content += f"[Tool: {getattr(block, 'name', '')}]\n{json.dumps(binput)}\n\n"
+                    elif btype == "tool_result":
+                        tool_id = getattr(block, "tool_use_id", None) or (block.get("tool_use_id", "") if isinstance(block, dict) else "")
+                        bcontent = getattr(block, "content", None) if not isinstance(block, dict) else block.get("content")
+                        text_content += f"Tool result for {tool_id}:\n{self._parse_tool_result_content(bcontent)}\n"
+
+                m = {"role": msg.role, "content": text_content.strip() or "..."}
+                reasoning_content = getattr(msg, "reasoning_content", None) or ("\n".join(reasoning_parts) if reasoning_parts else None)
+                if reasoning_content:
+                    m["reasoning_content"] = reasoning_content
+                if getattr(msg, "thinking_blocks", None):
+                    m["thinking_blocks"] = msg.thinking_blocks
+                converted.append(m)
+
+        return converted
+
+    def _parse_tool_result_content(self, content):
+        """Helper function to properly parse and normalize tool result content."""
+        if content is None:
+            return "No content provided"
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            result = ""
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    result += item.get("text", "") + "\n"
+                elif isinstance(item, str):
+                    result += item + "\n"
+                elif isinstance(item, dict):
+                    if "text" in item:
+                        result += item.get("text", "") + "\n"
+                    else:
+                        try:
+                            import json
+                            result += json.dumps(item) + "\n"
+                        except:
+                            result += str(item) + "\n"
+                else:
+                    try:
+                        result += str(item) + "\n"
+                    except:
+                        result += "Unparseable content\n"
+            return result.strip()
+        if isinstance(content, dict):
+            if content.get("type") == "text":
+                return content.get("text", "")
+            try:
+                import json
+                return json.dumps(content)
+            except:
+                return str(content)
+        try:
+            return str(content)
+        except:
+            return "Unparseable content"
+
+    def _convert_tools(self, tools):
+        """Convert Anthropic tools to OpenAI function format."""
+        openai_tools = []
+        for tool in tools:
+            if hasattr(tool, 'dict'):
+                tool_dict = tool.dict()
+            else:
+                try:
+                    tool_dict = dict(tool) if not isinstance(tool, dict) else tool
+                except (TypeError, ValueError):
+                    logger.error(f"Could not convert tool to dict: {tool}")
+                    continue
+
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool_dict["name"],
+                    "description": tool_dict.get("description", ""),
+                    "parameters": tool_dict.get("input_schema", {})
+                }
+            }
+            openai_tools.append(openai_tool)
+        return openai_tools
+
+    def _convert_tool_choice(self, tool_choice):
+        """Convert Anthropic tool_choice to OpenAI format."""
+        if hasattr(tool_choice, 'dict'):
+            tool_choice_dict = tool_choice.dict()
+        else:
+            tool_choice_dict = tool_choice
+
+        choice_type = tool_choice_dict.get("type")
+        if choice_type == "auto":
+            return "auto"
+        elif choice_type == "any":
+            return "any"
+        elif choice_type == "tool" and "name" in tool_choice_dict:
+            return {
+                "type": "function",
+                "function": {"name": tool_choice_dict["name"]}
+            }
+        return "auto"
+
+    def _extract_response_dict(self, response) -> Dict[str, Any]:
+        """Extract dict from various response types (ModelResponse, dict, etc.)."""
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, 'model_dump') and callable(getattr(response, 'model_dump')):
+            return response.model_dump()
+        if hasattr(response, 'dict') and callable(getattr(response, 'dict')):
+            return response.dict()
+        return response.__dict__ if hasattr(response, '__dict__') else {}

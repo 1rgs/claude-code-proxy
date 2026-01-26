@@ -564,7 +564,7 @@ class NVIDIANIMProvider(BaseProvider):
                             binput = getattr(block, "input", None) or (block.get("input", {}) if isinstance(block, dict) else {})
                             args = json.dumps(binput) if isinstance(binput, dict) else str(binput)
                             tool_calls.append({"id": bid, "type": "function", "function": {"name": bname, "arguments": args}})
-                    m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else ""}
+                    m = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else None}
                     if tool_calls:
                         m["tool_calls"] = tool_calls
                     reasoning_content = getattr(msg, "reasoning_content", None) or ("\n".join(reasoning_parts) if reasoning_parts else None)

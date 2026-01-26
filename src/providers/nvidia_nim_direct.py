@@ -310,14 +310,16 @@ class NVIDIANIMDirectProvider(BaseProvider):
         accumulated_reasoning = ""
 
         thinking_block_started = False
+        thinking_index = -1
+
         text_block_started = False
+        current_text_index = -1
+
         tool_calls_started = False
+        next_block_index = 0
 
-        # Dynamic block index to ensure sequential indexing (0, 1, 2...)
-        current_block_index = 0
-
-        # Tool call buffering: tc_index -> {id, name, arguments, yield_started, block_index}
-        tool_call_buffer = {}
+        tool_index_to_block = {}
+        tool_index_to_content = {}
         finish_reason = None
         usage_info = None
 
@@ -382,157 +384,75 @@ class NVIDIANIMDirectProvider(BaseProvider):
                         if delta_reasoning:
                             # Close text if it was open
                             if text_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                                 text_block_started = False
-                                current_block_index += (
-                                    1  # Increment after closing a block
-                                )
 
                             if not thinking_block_started:
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                # Start thinking block at next available index
+                                thinking_index = next_block_index
+                                next_block_index += 1
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
                                 thinking_block_started = True
 
                             accumulated_reasoning += delta_reasoning
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_block_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
 
                         # 2. Handle Text Content
                         delta_content = delta.get("content")
                         if delta_content:
                             # Close thinking if it was open
                             if thinking_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
                                 thinking_block_started = False
-                                current_block_index += (
-                                    1  # Increment after closing a block
-                                )
 
                             if not text_block_started:
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                current_text_index = next_block_index
+                                next_block_index += 1
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
                                 text_block_started = True
 
                             accumulated_text += delta_content
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_block_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
 
                         # 3. Handle Tool Calls
                         if delta.get("tool_calls"):
-                            # Close thinking or text if they were open (only once when tool calls start or between distinct blocks)
+                            # Close thinking or text if they were open
                             if thinking_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
                                 thinking_block_started = False
-                                current_block_index += (
-                                    1  # Increment after closing a block
-                                )
                             if text_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
                                 text_block_started = False
-                                current_block_index += (
-                                    1  # Increment after closing a block
-                                )
 
                             tool_calls_started = True
 
                             for tc in delta["tool_calls"]:
                                 tc_index = tc.get("index", 0)
-                                if (
-                                    tc_index < 0
-                                ):  # Handle models that don't provide index
-                                    tc_index = len(tool_call_buffer)
+                                if tc_index < 0:
+                                    tc_index = len(tool_index_to_block)
 
-                                # DEBUG: Log raw tool call chunk
-                                logger.warning(
-                                    f"[TOOL_DEBUG] Raw tc chunk: index={tc_index}, id={tc.get('id')}, func={tc.get('function')}"
-                                )
+                                if tc_index not in tool_index_to_block:
+                                    tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
+                                    tool_index_to_block[tc_index] = next_block_index
+                                    tool_index_to_content[tc_index] = ""
+                                    name = tc.get("function", {}).get("name", "")
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
+                                    next_block_index += 1
 
-                                # Initialize or update buffer for this tool call
-                                if tc_index not in tool_call_buffer:
-                                    # Assign a distinct block index for THIS tool call
-                                    # We use current_block_index, and MUST increment it for the next tool or next block
-                                    assigned_block_index = current_block_index
-                                    current_block_index += 1
-
-                                    tool_call_buffer[tc_index] = {
-                                        "id": tc.get("id"),
-                                        "name": tc.get("function", {}).get("name")
-                                        or "",
-                                        "arguments": tc.get("function", {}).get(
-                                            "arguments"
-                                        )
-                                        or "",
-                                        "yield_started": False,
-                                        "block_index": assigned_block_index,
-                                    }
-                                else:
-                                    if id_delta := tc.get("id"):
-                                        if tool_call_buffer[tc_index]["id"] is None:
-                                            tool_call_buffer[tc_index]["id"] = id_delta
-                                        else:
-                                            tool_call_buffer[tc_index]["id"] += id_delta
-                                    if name_delta := tc.get("function", {}).get("name"):
-                                        tool_call_buffer[tc_index]["name"] += name_delta
-                                    if args_delta := tc.get("function", {}).get(
-                                        "arguments"
-                                    ):
-                                        tool_call_buffer[tc_index]["arguments"] += (
-                                            args_delta
-                                        )
-
-                                tcb = tool_call_buffer[tc_index]
-
-                                # DEBUG: Log buffer state
-                                logger.warning(
-                                    f"[TOOL_DEBUG] Buffer state: index={tc_index}, name='{tcb['name']}', args_len={len(tcb['arguments'])}, started={tcb['yield_started']}"
-                                )
-
-                                # Delay yielding start until we have a name AND a signal that it's likely finished.
-                                # Signal for "name finished": presence of ANY arguments OR end of stream (handled below).
-                                # We also check if name is non-empty.
-                                has_name = len(tcb["name"]) > 0
-                                has_signal = (
-                                    len(tcb["arguments"]) > 0
-                                    or tc.get("function", {}).get("arguments")
-                                    is not None
-                                )
-
-                                if not tcb["yield_started"] and has_name and has_signal:
-                                    tool_id = tcb["id"] or f"tool_{uuid.uuid4()}"
-                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': tcb['block_index'], 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': tcb['name'], 'input': {}}})}\n\n"
-
-                                    # ANTHROPIC SPEC FIX: Send an initial empty JSON delta immediately after start
-                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': tcb['block_index'], 'delta': {'type': 'input_json_delta', 'partial_json': ''}})}\n\n"
-
-                                    # Catch up on any buffered arguments
-                                    if tcb["arguments"]:
-                                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': tcb['block_index'], 'delta': {'type': 'input_json_delta', 'partial_json': tcb['arguments']}})}\n\n"
-
-                                    tcb["yield_started"] = True
-
-                                # If already started, yield new arguments directly
-                                elif tcb["yield_started"]:
-                                    args_delta = tc.get("function", {}).get(
-                                        "arguments", ""
-                                    )
-                                    if args_delta:
-                                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': tcb['block_index'], 'delta': {'type': 'input_json_delta', 'partial_json': args_delta}})}\n\n"
+                                args = tc.get("function", {}).get("arguments", "")
+                                if args:
+                                    block_idx = tool_index_to_block[tc_index]
+                                    tool_index_to_content[tc_index] += args
+                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': args}})}\n\n"
 
         # Finalize and Close all blocks
         if thinking_block_started:
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
-            current_block_index += 1
+            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
         if text_block_started:
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_block_index})}\n\n"
-            current_block_index += 1
+            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
         if tool_calls_started:
-            for tc_index, tcb in tool_call_buffer.items():
-                if not tcb["yield_started"] and tcb["name"]:
-                    # Force yield if stream ended but tool name was buffered
-                    tool_id = tcb["id"] or f"tool_{uuid.uuid4()}"
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': tcb['block_index'], 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': tcb['name'], 'input': {}}})}\n\n"
-                    if tcb["arguments"]:
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': tcb['block_index'], 'delta': {'type': 'input_json_delta', 'partial_json': tcb['arguments']}})}\n\n"
-                    tcb["yield_started"] = True  # Mark as started so stop is sent
-
-                if tcb["yield_started"]:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tcb['block_index']})}\n\n"
+            for tc_index, block_idx in tool_index_to_block.items():
+                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_idx})}\n\n"
 
         # Map finish reason
         stop_reason_map = {
@@ -554,7 +474,7 @@ class NVIDIANIMDirectProvider(BaseProvider):
             output_tokens = (
                 len(accumulated_text) // 4
                 + len(accumulated_reasoning) // 4
-                + len(tool_call_buffer) * 50
+                + len(tool_index_to_content) * 50
             )
 
         yield f"event: message_delta\ndata: {json.dumps({'type': 'message_delta', 'delta': {'stop_reason': stop_reason, 'stop_sequence': None}, 'usage': {'output_tokens': output_tokens}})}\n\n"

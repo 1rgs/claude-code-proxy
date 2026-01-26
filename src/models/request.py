@@ -126,7 +126,7 @@ class MessagesRequest(BaseModel):
         new_model = v
 
         logger.debug(
-            f"[LOG] MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
+            f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
         )
 
         # Remove provider prefixes for easier matching
@@ -186,11 +186,11 @@ class MessagesRequest(BaseModel):
                 mapped = True
 
         if mapped:
-            logger.debug(f"[MAP] MODEL MAPPING: '{original_model}' -> '{new_model}'")
+            logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
             if not v.startswith(("openai/", "gemini/", "anthropic/")):
                 logger.warning(
-                    f"[WARN] No prefix or mapping rule for model: '{original_model}'. Using as is."
+                    f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is."
                 )
             new_model = v
 
@@ -220,7 +220,7 @@ class TokenCountRequest(BaseModel):
         new_model = v
 
         logger.debug(
-            f"[LOG] TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
+            f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'"
         )
 
         # Remove provider prefixes for easier matching
@@ -271,13 +271,11 @@ class TokenCountRequest(BaseModel):
                 mapped = True
 
         if mapped:
-            logger.debug(
-                f"[MAP] TOKEN COUNT MAPPING: '{original_model}' -> '{new_model}'"
-            )
+            logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
             if not v.startswith(("openai/", "gemini/", "anthropic/")):
                 logger.warning(
-                    f"[WARN] No prefix or mapping rule for token count model: '{original_model}'. Using as is."
+                    f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is."
                 )
             new_model = v
 

@@ -34,9 +34,7 @@ litellm.modify_params = True
 
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("server.log", "w", encoding="utf-8")],
+    level=logging.WARN, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -204,7 +202,7 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
         )
 
         logger.debug(
-            f"[REQ] PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}"
+            f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}"
         )
 
         # Check if this is a direct provider (bypasses LiteLLM)

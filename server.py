@@ -20,6 +20,13 @@ import threading
 # Load environment variables from .env file
 load_dotenv()
 
+# Disable LiteLLM callbacks to prevent event loop blocking
+# This fixes the "PostToolUse:Callback hook succeeded: Success" hanging issue
+litellm.suppress_debug_info = True
+litellm.set_verbose = False
+litellm.success_callback = []
+litellm.failure_callback = []
+
 # Configure logging
 logging.basicConfig(
     level=logging.WARN,  # Change to INFO level to show more details

@@ -89,7 +89,22 @@ class NVIDIANIMProvider(BaseProvider):
         return "nvidia_nim/"
 
     def _enforce_rate_limit(self):
-        """Enforce configured rate limit (default 40 requests/minute)."""
+        """Enforce configured rate limit (default 40 requests/minute).
+
+        WARNING: This method uses blocking waits. In async contexts (like FastAPI),
+        use _enforce_rate_limit_async() instead to avoid blocking the event loop.
+        """
+        # Check if we're in an async context and warn
+        try:
+            loop = asyncio.get_running_loop()
+            if loop is not None:
+                logger.warning(
+                    "NVIDIA NIM: _enforce_rate_limit() called from async context! "
+                    "This will block the event loop. Use prepare_request_async() instead."
+                )
+        except RuntimeError:
+            pass  # No running loop, safe to use sync version
+
         rate_limit = self.config.rate_limit or 40
         now = time.time()
         with self._rate_lock:
@@ -100,7 +115,9 @@ class NVIDIANIMProvider(BaseProvider):
                 wait_time = self._request_timestamps[0] + self.config.rate_window - now
                 if wait_time <= 0:
                     break
-                self._rate_lock.wait(wait_time)
+                # Use a short timeout to prevent indefinite blocking
+                # This allows the method to re-check conditions periodically
+                self._rate_lock.wait(min(wait_time, 0.5))
                 now = time.time()
                 while self._request_timestamps and now - self._request_timestamps[0] > self.config.rate_window:
                     self._request_timestamps.popleft()
@@ -109,23 +126,46 @@ class NVIDIANIMProvider(BaseProvider):
             logger.debug(f"NVIDIA NIM request recorded. Count: {len(self._request_timestamps)}/{rate_limit}")
 
     async def _enforce_rate_limit_async(self):
-        """Enforce rate limit using asyncio.sleep so the event loop is not blocked."""
+        """Enforce rate limit using asyncio.sleep so the event loop is not blocked.
+
+        This is the preferred method for async contexts (FastAPI, etc.).
+        Uses non-blocking asyncio.sleep() instead of threading.Condition.wait().
+        """
         rate_limit = self.config.rate_limit or 40
-        now = time.time()
-        while True:
+        max_retries = 120  # Prevent infinite loops (120 * 0.5s = 60s max wait)
+        retry_count = 0
+
+        while retry_count < max_retries:
+            now = time.time()
             with self._rate_lock:
+                # Clean up old timestamps outside the rate window
                 while self._request_timestamps and now - self._request_timestamps[0] > self.config.rate_window:
                     self._request_timestamps.popleft()
+
+                # Check if we can proceed
                 if len(self._request_timestamps) < rate_limit:
                     self._request_timestamps.append(now)
                     logger.debug(f"NVIDIA NIM request recorded. Count: {len(self._request_timestamps)}/{rate_limit}")
                     return
+
+                # Calculate wait time
                 wait_time = self._request_timestamps[0] + self.config.rate_window - now
+
             if wait_time <= 0:
-                now = time.time()
+                # Timestamps should have been cleaned, retry immediately
+                retry_count += 1
                 continue
-            await asyncio.sleep(wait_time)
-            now = time.time()
+
+            # Wait using non-blocking asyncio.sleep (capped at 1 second to stay responsive)
+            actual_wait = min(wait_time, 1.0)
+            logger.debug(f"NVIDIA NIM rate limit reached. Waiting {actual_wait:.2f}s (need {wait_time:.2f}s total)")
+            await asyncio.sleep(actual_wait)
+            retry_count += 1
+
+        # If we exceeded max retries, log warning but proceed anyway
+        logger.warning(f"NVIDIA NIM rate limit wait exceeded {max_retries} retries, proceeding anyway")
+        with self._rate_lock:
+            self._request_timestamps.append(time.time())
 
     def _prepare_request_impl(self, anthropic_request: Any) -> Dict[str, Any]:
         """Core request conversion without rate limiting. Used by prepare_request and prepare_request_async."""

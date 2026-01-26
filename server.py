@@ -7,16 +7,16 @@ through LiteLLM, using a provider-based architecture for extensibility.
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
-from dotenv import load_dotenv
-import asyncio
 import os
-import logging
 import json
+import logging
+import asyncio
 import sys
-from typing import Optional
 import uvicorn
-import time
+from dotenv import load_dotenv
 import litellm
+from typing import List, Dict, Any, Optional, Union, AsyncIterator
+from contextlib import asynccontextmanager
 
 # Load environment variables
 load_dotenv()
@@ -95,8 +95,28 @@ from src.models.request import (
 )
 from src.utils.helpers import log_request_beautifully
 
+# Global dictionary to hold initialized providers for lifespan management
+PROVIDERS: Dict[str, Any] = {}
+
+
 # Initialize FastAPI app
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    logger.info("Server starting up...")
+    yield
+    # Shutdown logic
+    logger.info("Server shutting down...")
+    # Close persistent clients in providers if any
+    for provider_name, provider_instance in PROVIDERS.items():
+        if hasattr(provider_instance, "_client") and hasattr(
+            provider_instance._client, "aclose"
+        ):
+            logger.info(f"Closing client for provider: {provider_name}")
+            await provider_instance._client.aclose()
+
+
+app = FastAPI(title="Claude Code Proxy", version="1.0.0", lifespan=lifespan)
 
 # Get environment configuration
 PREFERRED_PROVIDER = os.getenv("PREFERRED_PROVIDER", "openai").lower()
@@ -175,6 +195,7 @@ try:
     provider = ProviderRegistry.get(
         PREFERRED_PROVIDER, get_provider_config(PREFERRED_PROVIDER)
     )
+    PROVIDERS[PREFERRED_PROVIDER] = provider  # Store in global dictionary
     logger.info(f"Initialized provider: {PREFERRED_PROVIDER}")
 except ValueError as e:
     logger.error(f"Failed to initialize provider: {e}")
@@ -193,10 +214,10 @@ async def log_requests(request: Request, call_next):
 async def create_message(request_data: MessagesRequest, raw_request: Request):
     """Create a chat message using the configured provider."""
     try:
-        # Log the request details
-        body = await raw_request.body()
-        body_json = json.loads(body.decode("utf-8"))
-        original_model = body_json.get("model", "unknown")
+        # BEAUTIFUL LOGGING (using pydantic model directly to avoid re-parsing)
+        num_messages = len(request_data.messages)
+        num_tools = len(request_data.tools) if request_data.tools else 0
+        original_model = request_data.model
         display_model = (
             original_model.split("/")[-1] if "/" in original_model else original_model
         )
@@ -210,13 +231,13 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
 
         if is_direct_provider:
             # Direct provider - bypasses LiteLLM entirely
-            num_tools = len(request_data.tools) if request_data.tools else 0
+            # Log beautifully
             log_request_beautifully(
                 "POST",
                 raw_request.url.path,
                 display_model,
                 request_data.model,
-                len(request_data.messages),
+                num_messages,
                 num_tools,
                 200,
             )

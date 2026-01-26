@@ -5,13 +5,11 @@ import logging
 import os
 import json
 import uuid
+from typing import Dict, Any, AsyncIterator, Union, Optional
 import time
 import threading
 from collections import deque
-from typing import Dict, Any, AsyncIterator, Union
-
 import httpx
-
 from .base import BaseProvider, ProviderConfig
 
 logger = logging.getLogger(__name__)
@@ -32,6 +30,11 @@ class NVIDIANIMDirectProvider(BaseProvider):
             or os.getenv("NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
         ).rstrip("/")
         self._nim_params = self._load_nim_params()
+        # Initialize a persistent client for connection reuse
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(300.0, connect=30.0),
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+        )
 
     def _load_nim_params(self) -> Dict[str, Any]:
         """Load NIM parameters from environment variables."""
@@ -325,128 +328,124 @@ class NVIDIANIMDirectProvider(BaseProvider):
         tool_index_to_content = {}
         finish_reason = None
         usage_info = None
+        async with self._client.stream(
+            "POST",
+            f"{self._base_url}/chat/completions",
+            headers=headers,
+            json=body,
+        ) as response:
+            if response.status_code != 200:
+                error_text = await response.aread()
+                logger.error(
+                    f"NVIDIA NIM API error: {response.status_code} - {error_text}"
+                )
+                raise Exception(f"NVIDIA NIM API error: {response.status_code}")
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=30.0)
-        ) as client:
-            async with client.stream(
-                "POST",
-                f"{self._base_url}/chat/completions",
-                headers=headers,
-                json=body,
-            ) as response:
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    logger.error(
-                        f"NVIDIA NIM API error: {response.status_code} - {error_text}"
-                    )
-                    raise Exception(f"NVIDIA NIM API error: {response.status_code}")
+            buffer = ""
+            async for chunk in response.aiter_text():
+                buffer += chunk
 
-                buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
+                while "\n\n" in buffer:
+                    event_end = buffer.index("\n\n")
+                    event_data = buffer[:event_end]
+                    buffer = buffer[event_end + 2 :]
 
-                    while "\n\n" in buffer:
-                        event_end = buffer.index("\n\n")
-                        event_data = buffer[:event_end]
-                        buffer = buffer[event_end + 2 :]
+                    if not event_data.strip():
+                        continue
 
-                        if not event_data.strip():
-                            continue
+                    data_line = None
+                    for line in event_data.split("\n"):
+                        if line.startswith("data: "):
+                            data_line = line[6:]
+                            break
 
-                        data_line = None
-                        for line in event_data.split("\n"):
-                            if line.startswith("data: "):
-                                data_line = line[6:]
-                                break
+                    if not data_line or data_line == "[DONE]":
+                        continue
 
-                        if not data_line or data_line == "[DONE]":
-                            continue
+                    try:
+                        chunk_json = json.loads(data_line)
+                    except json.JSONDecodeError:
+                        continue
 
-                        try:
-                            chunk_json = json.loads(data_line)
-                        except json.JSONDecodeError:
-                            continue
-
-                        if "choices" not in chunk_json or not chunk_json["choices"]:
-                            if "usage" in chunk_json:
-                                usage_info = chunk_json["usage"]
-                            continue
-
-                        choice = chunk_json["choices"][0]
-                        delta = choice.get("delta", {})
-
-                        if choice.get("finish_reason"):
-                            finish_reason = choice["finish_reason"]
-
+                    if "choices" not in chunk_json or not chunk_json["choices"]:
                         if "usage" in chunk_json:
                             usage_info = chunk_json["usage"]
+                        continue
 
-                        # 1. Handle Reasoning/Thinking
-                        delta_reasoning = delta.get("reasoning_content")
-                        if delta_reasoning:
-                            # Close text if it was open
-                            if text_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                                text_block_started = False
+                    choice = chunk_json["choices"][0]
+                    delta = choice.get("delta", {})
 
-                            if not thinking_block_started:
-                                # Start thinking block at next available index
-                                thinking_index = next_block_index
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+
+                    if "usage" in chunk_json:
+                        usage_info = chunk_json["usage"]
+
+                    # 1. Handle Reasoning/Thinking
+                    delta_reasoning = delta.get("reasoning_content")
+                    if delta_reasoning:
+                        # Close text if it was open
+                        if text_block_started:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                            text_block_started = False
+
+                        if not thinking_block_started:
+                            # Start thinking block at next available index
+                            thinking_index = next_block_index
+                            next_block_index += 1
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                            thinking_block_started = True
+
+                        accumulated_reasoning += delta_reasoning
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
+
+                    # 2. Handle Text Content
+                    delta_content = delta.get("content")
+                    if delta_content:
+                        # Close thinking if it was open
+                        if thinking_block_started:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                            thinking_block_started = False
+
+                        if not text_block_started:
+                            current_text_index = next_block_index
+                            next_block_index += 1
+                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                            text_block_started = True
+
+                        accumulated_text += delta_content
+                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+
+                    # 3. Handle Tool Calls
+                    if delta.get("tool_calls"):
+                        # Close thinking or text if they were open
+                        if thinking_block_started:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                            thinking_block_started = False
+                        if text_block_started:
+                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                            text_block_started = False
+
+                        tool_calls_started = True
+
+                        for tc in delta["tool_calls"]:
+                            tc_index = tc.get("index", 0)
+                            if tc_index < 0:
+                                tc_index = len(tool_index_to_block)
+
+                            if tc_index not in tool_index_to_block:
+                                tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
+                                tool_index_to_block[tc_index] = next_block_index
+                                tool_index_to_content[tc_index] = ""
+                                name = tc.get("function", {}).get("name", "")
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
                                 next_block_index += 1
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
-                                thinking_block_started = True
 
-                            accumulated_reasoning += delta_reasoning
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
-
-                        # 2. Handle Text Content
-                        delta_content = delta.get("content")
-                        if delta_content:
-                            # Close thinking if it was open
-                            if thinking_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                                thinking_block_started = False
-
-                            if not text_block_started:
-                                current_text_index = next_block_index
-                                next_block_index += 1
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                                text_block_started = True
-
-                            accumulated_text += delta_content
-                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
-
-                        # 3. Handle Tool Calls
-                        if delta.get("tool_calls"):
-                            # Close thinking or text if they were open
-                            if thinking_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                                thinking_block_started = False
-                            if text_block_started:
-                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                                text_block_started = False
-
-                            tool_calls_started = True
-
-                            for tc in delta["tool_calls"]:
-                                tc_index = tc.get("index", 0)
-                                if tc_index < 0:
-                                    tc_index = len(tool_index_to_block)
-
-                                if tc_index not in tool_index_to_block:
-                                    tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
-                                    tool_index_to_block[tc_index] = next_block_index
-                                    tool_index_to_content[tc_index] = ""
-                                    name = tc.get("function", {}).get("name", "")
-                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
-                                    next_block_index += 1
-
-                                args = tc.get("function", {}).get("arguments", "")
-                                if args:
-                                    block_idx = tool_index_to_block[tc_index]
-                                    tool_index_to_content[tc_index] += args
-                                    yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': args}})}\n\n"
+                            args = tc.get("function", {}).get("arguments", "")
+                            if args:
+                                block_idx = tool_index_to_block[tc_index]
+                                tool_index_to_content[tc_index] += args
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': args}})}\n\n"
 
         # Finalize and Close all blocks
         if thinking_block_started:
@@ -497,16 +496,13 @@ class NVIDIANIMDirectProvider(BaseProvider):
             "Content-Type": "application/json",
         }
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=30.0)
-        ) as client:
-            response = await client.post(
-                f"{self._base_url}/chat/completions",
-                headers=headers,
-                json=body,
-            )
-            response.raise_for_status()
-            return response.json()
+        response = await self._client.post(
+            f"{self._base_url}/chat/completions",
+            headers=headers,
+            json=body,
+        )
+        response.raise_for_status()
+        return response.json()
 
     def convert_response_direct(
         self, response_json: dict, original_request: Any

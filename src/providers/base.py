@@ -42,6 +42,26 @@ class BaseProvider(ABC):
         """Converts Anthropic format request to provider-specific streaming request."""
         pass
 
+    async def prepare_request_async(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
+        """Async version for non-blocking request preparation.
+
+        Default implementation calls sync version. Providers with blocking operations
+        (like rate limiting) should override this with an async implementation.
+        """
+        return self.prepare_request(anthropic_request, count_towards_limit)
+
+    async def prepare_streaming_request_async(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
+        """Async version for non-blocking streaming request preparation.
+
+        Default implementation calls sync version. Providers with blocking operations
+        (like rate limiting) should override this with an async implementation.
+        """
+        return self.prepare_streaming_request(anthropic_request, count_towards_limit)
+
     @abstractmethod
     def convert_response(
         self, litellm_response: Union[Dict, Any], original_request: Any

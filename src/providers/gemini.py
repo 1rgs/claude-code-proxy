@@ -183,6 +183,21 @@ class GeminiProvider(BaseProvider):
         req["stream"] = True
         return req
 
+    async def prepare_request_async(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
+        """Async version for non-blocking request preparation."""
+        # Gemini provider has no blocking operations, so we can just return directly
+        return self.prepare_request(anthropic_request, count_towards_limit)
+
+    async def prepare_streaming_request_async(
+        self, anthropic_request: Any, count_towards_limit: bool = True
+    ) -> Dict[str, Any]:
+        """Async version for non-blocking streaming request preparation."""
+        req = await self.prepare_request_async(anthropic_request, count_towards_limit)
+        req["stream"] = True
+        return req
+
     def convert_response(
         self, litellm_response: Union[Dict, Any], original_request: Any
     ) -> Any:

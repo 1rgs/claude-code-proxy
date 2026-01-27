@@ -247,8 +247,7 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 # Count input tokens for direct streaming
                 # Since direct provider bypasses prepare_request, we use the build_request_body logic or robust counter
                 # For NIM direct, we can use the same messages conversion or just the robust counter on original messages
-                input_tokens = await asyncio.to_thread(
-                    get_robust_token_count,
+                input_tokens = get_robust_token_count(
                     messages=request_data.messages,
                     model=request_data.model,
                 )
@@ -267,20 +266,13 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
             configure_litellm_for_provider(PREFERRED_PROVIDER)
 
             if request_data.stream:
-                if hasattr(provider, "prepare_streaming_request_async"):
-                    litellm_request = await provider.prepare_streaming_request_async(
-                        request_data
-                    )
-                else:
-                    # Run sync method in thread pool to avoid blocking the event loop
-                    # This is critical for providers with rate limiting (e.g., NVIDIA NIM)
-                    litellm_request = await asyncio.to_thread(
-                        provider.prepare_streaming_request, request_data
-                    )
+                # All providers now have async methods
+                litellm_request = await provider.prepare_streaming_request_async(
+                    request_data
+                )
 
                 # Count input tokens for streaming
-                input_tokens = await asyncio.to_thread(
-                    get_robust_token_count,
+                input_tokens = get_robust_token_count(
                     messages=litellm_request["messages"],
                     model=litellm_request["model"],
                 )
@@ -311,13 +303,8 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                     media_type="text/event-stream",
                 )
             else:
-                if hasattr(provider, "prepare_request_async"):
-                    litellm_request = await provider.prepare_request_async(request_data)
-                else:
-                    # Run sync method in thread pool to avoid blocking the event loop
-                    litellm_request = await asyncio.to_thread(
-                        provider.prepare_request, request_data
-                    )
+                # All providers now have async methods
+                litellm_request = await provider.prepare_request_async(request_data)
                 litellm_response = await litellm.acompletion(**litellm_request)
                 anthropic_response = provider.convert_response(
                     litellm_response, request_data
@@ -422,15 +409,10 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             tool_choice=request_data.tool_choice,
             thinking=request_data.thinking,
         )
-        if hasattr(provider, "prepare_request_async"):
-            litellm_request = await provider.prepare_request_async(
-                temp_request, count_towards_limit=False
-            )
-        else:
-            # Run sync method in thread pool to avoid blocking the event loop
-            litellm_request = await asyncio.to_thread(
-                provider.prepare_request, temp_request, count_towards_limit=False
-            )
+        # All providers now have async methods
+        litellm_request = await provider.prepare_request_async(
+            temp_request, count_towards_limit=False
+        )
 
         # Log beautifully (only for non-direct providers that return proper litellm_request)
         if not is_direct_provider:
@@ -446,8 +428,7 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             )
 
         # Count tokens (run in thread to avoid blocking the event loop)
-        token_count = await asyncio.to_thread(
-            get_robust_token_count,
+        token_count = get_robust_token_count(
             messages=litellm_request["messages"],
             model=litellm_request.get("model") or request_data.model,
         )

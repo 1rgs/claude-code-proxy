@@ -614,6 +614,12 @@
             "owned_by": "moonshotai"
         },
         {
+            "id": "moonshotai/kimi-k2.5",
+            "object": "model",
+            "created": 735790403,
+            "owned_by": "moonshotai"
+        },
+        {
             "id": "nv-mistralai/mistral-nemo-12b-instruct",
             "object": "model",
             "created": 735790403,

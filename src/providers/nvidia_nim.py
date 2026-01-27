@@ -75,7 +75,7 @@ class NVIDIANIMProvider(BaseProvider):
             params["request_id"] = val
 
         # Thinking/reasoning (will be merged into extra_body)
-        extra_body = {}
+        extra_body: Dict[str, Any] = {}
         if val := os.getenv("NVIDIA_NIM_REASONING_EFFORT"):
             extra_body["reasoning_effort"] = val
         if val := os.getenv("NVIDIA_NIM_INCLUDE_REASONING"):
@@ -621,7 +621,7 @@ class NVIDIANIMProvider(BaseProvider):
                     "tool_calls": "tool_use",
                     "content_filter": "stop_sequence",
                 }
-                stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+                stop_reason = stop_reason_map.get(finish_reason, "end_turn")  # type: ignore[arg-type]
 
                 # Close any open tool blocks
                 for tool_id, block_idx in tool_id_to_block.items():

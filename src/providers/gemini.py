@@ -339,6 +339,9 @@ class GeminiProvider(BaseProvider):
         # Track fallback index generation for negative tool indices (e.g., when NVIDIA NIM returns -1)
         next_tool_fallback_index = 0
 
+        # Track usage from LiteLLM
+        actual_usage = None
+
         async for chunk in litellm_generator:
             # Extract choice and delta
             choice = None

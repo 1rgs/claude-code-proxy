@@ -450,7 +450,7 @@ class OpenAIProvider(BaseProvider):
                     "tool_calls": "tool_use",
                     "content_filter": "stop_sequence",
                 }
-                stop_reason = stop_reason_map.get(finish_reason, "end_turn")
+                stop_reason = stop_reason_map.get(finish_reason, "end_turn")  # type: ignore[arg-type]
 
                 # Close any open tool blocks
                 for tc_index, block_idx in tool_index_to_block.items():

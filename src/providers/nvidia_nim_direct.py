@@ -374,7 +374,7 @@ class NVIDIANIMDirectProvider(BaseProvider):
                 )
                 raise Exception(f"NVIDIA NIM API error: {response.status_code}")
 
-            buffer = ""
+            buffer: str = ""
             async for chunk in response.aiter_text():
                 if stream_done:
                     break  # Exit outer loop
@@ -655,7 +655,10 @@ class NVIDIANIMDirectProvider(BaseProvider):
         return self.convert_response_direct(litellm_response, original_request)
 
     async def stream_response(
-        self, litellm_generator: AsyncIterator
+        self,
+        litellm_generator: AsyncIterator,
+        input_tokens: int = 0,
+        model: str = "claude-sonnet-4-20250514",
     ) -> AsyncIterator[str]:
         # The direct provider uses its own streaming logic called by server.py
         # but we provide this to satisfy the abstract class requirements

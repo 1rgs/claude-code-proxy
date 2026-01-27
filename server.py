@@ -22,6 +22,7 @@ from contextlib import asynccontextmanager
 load_dotenv()
 
 # Disable LiteLLM callbacks to prevent event loop blocking
+# type: ignore[attr-defined]
 litellm.suppress_debug_info = True
 litellm.set_verbose = False
 litellm.success_callback = []

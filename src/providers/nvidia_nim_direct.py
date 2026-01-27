@@ -298,6 +298,8 @@ class NVIDIANIMDirectProvider(BaseProvider):
         if request_data.thinking and getattr(request_data.thinking, "enabled", True):
             # For some NIM models, we might need a specific flag or thinking type
             extra_body.setdefault("thinking", {"type": "enabled"})
+            # MiniMax uses reasoning_split to separate thinking from content
+            extra_body.setdefault("reasoning_split", True)
             # Also ensure max_tokens is high enough or handle budget if needed in the future
 
         if extra_body:
@@ -422,6 +424,13 @@ class NVIDIANIMDirectProvider(BaseProvider):
 
                     # 1. Handle Reasoning/Thinking
                     delta_reasoning = delta.get("reasoning_content")
+                    # MiniMax uses reasoning_details array instead of reasoning_content
+                    if not delta_reasoning:
+                        reasoning_details = delta.get("reasoning_details")
+                        if reasoning_details and isinstance(reasoning_details, list):
+                            delta_reasoning = "".join(
+                                item.get("text", "") for item in reasoning_details if isinstance(item, dict)
+                            )
                     if delta_reasoning:
                         # Close text if it was open
                         if text_block_started:
@@ -557,6 +566,13 @@ class NVIDIANIMDirectProvider(BaseProvider):
 
         # Handle reasoning/thinking
         reasoning = message.get("reasoning_content")
+        # MiniMax uses reasoning_details array instead of reasoning_content
+        if not reasoning:
+            reasoning_details = message.get("reasoning_details")
+            if reasoning_details and isinstance(reasoning_details, list):
+                reasoning = "\n".join(
+                    item.get("text", "") for item in reasoning_details if isinstance(item, dict)
+                )
         if reasoning:
             content.append({"type": "thinking", "thinking": reasoning})
 

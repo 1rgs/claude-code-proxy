@@ -166,6 +166,7 @@ def get_provider_config(provider_name: str) -> ProviderConfig:
                 "NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"
             ),
             rate_limit=int(os.getenv("NVIDIA_NIM_RATE_LIMIT", "40")),
+            rate_window=int(os.getenv("NVIDIA_NIM_RATE_WINDOW", "60")),
         )
     elif provider_name == "nvidia_nim_direct":
         return ProviderConfig(
@@ -174,6 +175,7 @@ def get_provider_config(provider_name: str) -> ProviderConfig:
                 "NVIDIA_NIM_BASE_URL", "https://integrate.api.nvidia.com/v1"
             ),
             rate_limit=int(os.getenv("NVIDIA_NIM_RATE_LIMIT", "40")),
+            rate_window=int(os.getenv("NVIDIA_NIM_RATE_WINDOW", "60")),
         )
     else:
         raise ValueError(f"Unknown provider: {provider_name}")

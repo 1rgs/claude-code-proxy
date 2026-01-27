@@ -31,8 +31,9 @@ class NVIDIANIMDirectProvider(BaseProvider):
         ).rstrip("/")
         self._nim_params = self._load_nim_params()
         # Initialize a persistent client for connection reuse
+        # read=60.0 ensures we fail fast if NVIDIA NIM stalls mid-response
         self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0, connect=30.0),
+            timeout=httpx.Timeout(300.0, connect=30.0, read=60.0),
             limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
         )
 

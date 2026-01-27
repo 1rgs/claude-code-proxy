@@ -211,7 +211,7 @@ The proxy uses a modular provider system (`src/providers/`) supporting:
 
 ### Thinking / Reasoning Blocks
 
-For NVIDIA NIM direct provider, pass `extra_body` to enable reasoning:
+For NVIDIA NIM direct provider, `extra_body` is passed to enable reasoning:
 
 ```json
 {

@@ -360,6 +360,7 @@ class NVIDIANIMDirectProvider(BaseProvider):
         tool_index_to_content = {}
         finish_reason = None
         usage_info = None
+        stream_done = False  # Flag to break out of both loops
         async with self._client.stream(
             "POST",
             f"{self._base_url}/chat/completions",
@@ -375,6 +376,8 @@ class NVIDIANIMDirectProvider(BaseProvider):
 
             buffer = ""
             async for chunk in response.aiter_text():
+                if stream_done:
+                    break  # Exit outer loop
                 buffer += chunk
 
                 while "\n\n" in buffer:
@@ -391,8 +394,11 @@ class NVIDIANIMDirectProvider(BaseProvider):
                             data_line = line[6:]
                             break
 
-                    if not data_line or data_line == "[DONE]":
+                    if not data_line:
                         continue
+                    if data_line == "[DONE]":
+                        stream_done = True  # Signal to exit both loops
+                        break  # Exit inner loop
 
                     try:
                         chunk_json = json.loads(data_line)

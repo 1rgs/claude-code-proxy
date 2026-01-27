@@ -364,138 +364,156 @@ class NVIDIANIMDirectProvider(BaseProvider):
         finish_reason = None
         usage_info = None
         stream_done = False  # Flag to break out of both loops
-        async with self._client.stream(
-            "POST",
-            f"{self._base_url}/chat/completions",
-            headers=headers,
-            json=body,
-        ) as response:
-            if response.status_code != 200:
-                error_text = await response.aread()
-                logger.error(
-                    f"NVIDIA NIM API error: {response.status_code} - {error_text}"
-                )
-                raise Exception(f"NVIDIA NIM API error: {response.status_code}")
+        error_occurred = False
+        error_message = ""
 
-            buffer: str = ""
-            async for chunk in response.aiter_text():
-                if stream_done:
-                    break  # Exit outer loop
-                buffer += chunk
+        try:
+            async with self._client.stream(
+                "POST",
+                f"{self._base_url}/chat/completions",
+                headers=headers,
+                json=body,
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    logger.error(
+                        f"NVIDIA NIM API error: {response.status_code} - {error_text}"
+                    )
+                    error_occurred = True
+                    error_message = f"API error {response.status_code}: {error_text.decode('utf-8', errors='replace')}"
+                else:
+                    buffer: str = ""
+                    async for chunk in response.aiter_text():
+                        if stream_done:
+                            break  # Exit outer loop
+                        buffer += chunk
 
-                while "\n\n" in buffer:
-                    event_end = buffer.index("\n\n")
-                    event_data = buffer[:event_end]
-                    buffer = buffer[event_end + 2 :]
+                        while "\n\n" in buffer:
+                            event_end = buffer.index("\n\n")
+                            event_data = buffer[:event_end]
+                            buffer = buffer[event_end + 2 :]
 
-                    if not event_data.strip():
-                        continue
+                            if not event_data.strip():
+                                continue
 
-                    data_line = None
-                    for line in event_data.split("\n"):
-                        if line.startswith("data: "):
-                            data_line = line[6:]
-                            break
+                            data_line = None
+                            for line in event_data.split("\n"):
+                                if line.startswith("data: "):
+                                    data_line = line[6:]
+                                    break
 
-                    if not data_line:
-                        continue
-                    if data_line == "[DONE]":
-                        stream_done = True  # Signal to exit both loops
-                        break  # Exit inner loop
+                            if not data_line:
+                                continue
+                            if data_line == "[DONE]":
+                                stream_done = True  # Signal to exit both loops
+                                break  # Exit inner loop
 
-                    try:
-                        chunk_json = json.loads(data_line)
-                    except json.JSONDecodeError:
-                        continue
+                            try:
+                                chunk_json = json.loads(data_line)
+                            except json.JSONDecodeError:
+                                continue
 
-                    if "choices" not in chunk_json or not chunk_json["choices"]:
-                        if "usage" in chunk_json:
-                            usage_info = chunk_json["usage"]
-                        continue
+                            if "choices" not in chunk_json or not chunk_json["choices"]:
+                                if "usage" in chunk_json:
+                                    usage_info = chunk_json["usage"]
+                                continue
 
-                    choice = chunk_json["choices"][0]
-                    delta = choice.get("delta", {})
+                            choice = chunk_json["choices"][0]
+                            delta = choice.get("delta", {})
 
-                    if choice.get("finish_reason"):
-                        finish_reason = choice["finish_reason"]
+                            if choice.get("finish_reason"):
+                                finish_reason = choice["finish_reason"]
 
-                    if "usage" in chunk_json:
-                        usage_info = chunk_json["usage"]
+                            if "usage" in chunk_json:
+                                usage_info = chunk_json["usage"]
 
-                    # 1. Handle Reasoning/Thinking
-                    delta_reasoning = delta.get("reasoning_content")
-                    # MiniMax uses reasoning_details array instead of reasoning_content
-                    if not delta_reasoning:
-                        reasoning_details = delta.get("reasoning_details")
-                        if reasoning_details and isinstance(reasoning_details, list):
-                            delta_reasoning = "".join(
-                                item.get("text", "") for item in reasoning_details if isinstance(item, dict)
-                            )
-                    if delta_reasoning:
-                        # Close text if it was open
-                        if text_block_started:
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                            text_block_started = False
+                            # 1. Handle Reasoning/Thinking
+                            delta_reasoning = delta.get("reasoning_content")
+                            # MiniMax uses reasoning_details array instead of reasoning_content
+                            if not delta_reasoning:
+                                reasoning_details = delta.get("reasoning_details")
+                                if reasoning_details and isinstance(reasoning_details, list):
+                                    delta_reasoning = "".join(
+                                        item.get("text", "") for item in reasoning_details if isinstance(item, dict)
+                                    )
+                            if delta_reasoning:
+                                # Close text if it was open
+                                if text_block_started:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                    text_block_started = False
 
-                        if not thinking_block_started:
-                            # Start thinking block at next available index
-                            thinking_index = next_block_index
-                            next_block_index += 1
-                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
-                            thinking_block_started = True
+                                if not thinking_block_started:
+                                    # Start thinking block at next available index
+                                    thinking_index = next_block_index
+                                    next_block_index += 1
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': thinking_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                    thinking_block_started = True
 
-                        accumulated_reasoning += delta_reasoning
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
+                                accumulated_reasoning += delta_reasoning
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': delta_reasoning}})}\n\n"
 
-                    # 2. Handle Text Content
-                    delta_content = delta.get("content")
-                    if delta_content:
-                        # Log for debugging
-                        logger.debug(f"[DEBUG] NVIDIA DELTA CONTENT: {delta_content[:100] if isinstance(delta_content, str) else type(delta_content)}")
-                        # Close thinking if it was open
-                        if thinking_block_started:
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                            thinking_block_started = False
+                            # 2. Handle Text Content
+                            delta_content = delta.get("content")
+                            if delta_content:
+                                # Log for debugging
+                                logger.debug(f"[DEBUG] NVIDIA DELTA CONTENT: {delta_content[:100] if isinstance(delta_content, str) else type(delta_content)}")
+                                # Close thinking if it was open
+                                if thinking_block_started:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                    thinking_block_started = False
 
-                        if not text_block_started:
-                            current_text_index = next_block_index
-                            next_block_index += 1
-                            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                            text_block_started = True
+                                if not text_block_started:
+                                    current_text_index = next_block_index
+                                    next_block_index += 1
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': current_text_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                    text_block_started = True
 
-                        accumulated_text += delta_content
-                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+                                accumulated_text += delta_content
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
 
-                    # 3. Handle Tool Calls
-                    if delta.get("tool_calls"):
-                        # Close thinking or text if they were open
-                        if thinking_block_started:
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                            thinking_block_started = False
-                        if text_block_started:
-                            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
-                            text_block_started = False
+                            # 3. Handle Tool Calls
+                            if delta.get("tool_calls"):
+                                # Close thinking or text if they were open
+                                if thinking_block_started:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                    thinking_block_started = False
+                                if text_block_started:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                    text_block_started = False
 
-                        tool_calls_started = True
+                                tool_calls_started = True
 
-                        for tc in delta["tool_calls"]:
-                            tc_index = tc.get("index", 0)
-                            if tc_index < 0:
-                                tc_index = len(tool_index_to_block)
+                                for tc in delta["tool_calls"]:
+                                    tc_index = tc.get("index", 0)
+                                    if tc_index < 0:
+                                        tc_index = len(tool_index_to_block)
 
-                            if tc_index not in tool_index_to_block:
-                                tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
-                                tool_index_to_block[tc_index] = next_block_index
-                                tool_index_to_content[tc_index] = ""
-                                name = tc.get("function", {}).get("name", "")
-                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
-                                next_block_index += 1
+                                    if tc_index not in tool_index_to_block:
+                                        tool_id = tc.get("id") or f"tool_{uuid.uuid4()}"
+                                        tool_index_to_block[tc_index] = next_block_index
+                                        tool_index_to_content[tc_index] = ""
+                                        name = tc.get("function", {}).get("name", "")
+                                        yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': {}}})}\n\n"
+                                        next_block_index += 1
 
-                            args = tc.get("function", {}).get("arguments", "")
-                            if args:
-                                block_idx = tool_index_to_block[tc_index]
-                                tool_index_to_content[tc_index] += args
-                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': args}})}\n\n"
+                                    args = tc.get("function", {}).get("arguments", "")
+                                    if args:
+                                        block_idx = tool_index_to_block[tc_index]
+                                        tool_index_to_content[tc_index] += args
+                                        yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': block_idx, 'delta': {'type': 'input_json_delta', 'partial_json': args}})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Streaming error: {e}")
+            error_occurred = True
+            error_message = str(e)
+
+        # If an error occurred, send it as a text content block
+        if error_occurred:
+            error_block_index = next_block_index
+            next_block_index += 1
+            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': error_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': error_block_index, 'delta': {'type': 'text_delta', 'text': error_message}})}\n\n"
+            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': error_block_index})}\n\n"
 
         # Finalize and Close all blocks
         if thinking_block_started:

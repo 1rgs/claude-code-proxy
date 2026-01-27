@@ -51,27 +51,56 @@ class NVIDIANIMDirectProvider(BaseProvider):
         return ""
 
     async def _enforce_rate_limit_async(self):
-        """Enforce rate limit using asyncio.sleep."""
+        """Enforce rate limit using asyncio.sleep so the event loop is not blocked.
+
+        This is the preferred method for async contexts (FastAPI, etc.).
+        Uses non-blocking asyncio.sleep() with capped wait times for responsiveness.
+        """
         rate_limit = self.config.rate_limit or 40
         rate_window = self.config.rate_window or 60
-        now = time.time()
+        max_retries = 120  # Prevent infinite loops (120 * 1s = 120s max wait)
+        retry_count = 0
 
-        while True:
+        while retry_count < max_retries:
+            now = time.time()
             with self._rate_lock:
+                # Clean up old timestamps outside the rate window
                 while (
                     self._request_timestamps
                     and now - self._request_timestamps[0] > rate_window
                 ):
                     self._request_timestamps.popleft()
+
+                # Check if we can proceed
                 if len(self._request_timestamps) < rate_limit:
                     self._request_timestamps.append(now)
+                    logger.debug(
+                        f"NVIDIA NIM Direct request recorded. Count: {len(self._request_timestamps)}/{rate_limit}"
+                    )
                     return
+
+                # Calculate wait time
                 wait_time = self._request_timestamps[0] + rate_window - now
+
             if wait_time <= 0:
-                now = time.time()
+                # Timestamps should have been cleaned, retry immediately
+                retry_count += 1
                 continue
-            await asyncio.sleep(wait_time)
-            now = time.time()
+
+            # Wait using non-blocking asyncio.sleep (capped at 1 second to stay responsive)
+            actual_wait = min(wait_time, 1.0)
+            logger.debug(
+                f"NVIDIA NIM Direct rate limit reached. Waiting {actual_wait:.2f}s (need {wait_time:.2f}s total)"
+            )
+            await asyncio.sleep(actual_wait)
+            retry_count += 1
+
+        # If we exceeded max retries, log warning but proceed anyway
+        logger.warning(
+            f"NVIDIA NIM Direct rate limit wait exceeded {max_retries} retries, proceeding anyway"
+        )
+        with self._rate_lock:
+            self._request_timestamps.append(time.time())
 
     def _convert_messages(self, messages) -> list:
         """Convert Anthropic messages to OpenAI format."""

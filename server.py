@@ -34,7 +34,8 @@ litellm.modify_params = True
 
 # Configure logging
 logging.basicConfig(
-    level=logging.WARN, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("debug.log")]
 )
 logger = logging.getLogger(__name__)
 
@@ -257,6 +258,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                         request_data, input_tokens=input_tokens
                     ),
                     media_type="text/event-stream",
+                    headers={
+                        "X-Accel-Buffering": "no",  # Disable nginx buffering
+                        "Cache-Control": "no-cache",  # Prevent caching
+                        "Connection": "keep-alive",
+                    },
                 )
             else:
                 response_json = await provider.call_api_direct(request_data)
@@ -301,6 +307,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                         model=original_model,
                     ),
                     media_type="text/event-stream",
+                    headers={
+                        "X-Accel-Buffering": "no",  # Disable nginx buffering
+                        "Cache-Control": "no-cache",  # Prevent caching
+                        "Connection": "keep-alive",
+                    },
                 )
             else:
                 # All providers now have async methods

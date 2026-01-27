@@ -35,7 +35,7 @@ litellm.modify_params = True
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("debug.log")]
+    handlers=[logging.FileHandler("debug.log", encoding="utf-8")]
 )
 logger = logging.getLogger(__name__)
 

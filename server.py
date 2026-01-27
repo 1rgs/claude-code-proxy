@@ -377,7 +377,7 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
         )
 
         logger.debug(
-            f"📊 PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}"
+            f"[CHART] PROCESSING REQUEST: Model={request_data.model}, Stream={request_data.stream}"
         )
 
         # Check if this is a direct provider (bypasses LiteLLM)

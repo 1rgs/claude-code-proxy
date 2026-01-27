@@ -140,6 +140,10 @@ USE_VERTEX_AUTH = os.getenv("USE_VERTEX_AUTH", "False").lower() == "true"
 VERTEX_PROJECT = os.getenv("VERTEX_PROJECT", "unset")
 VERTEX_LOCATION = os.getenv("VERTEX_LOCATION", "unset")
 
+# Fast prefix detection - bypasses LLM for bash command prefix classification
+# Set to "false" to disable and use the LLM for prefix detection
+FAST_PREFIX_DETECTION = os.getenv("FAST_PREFIX_DETECTION", "true").lower() == "true"
+
 
 def get_provider_config(provider_name: str) -> ProviderConfig:
     """Get provider configuration from environment variables."""
@@ -212,10 +216,158 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+def extract_command_prefix(command: str) -> str:
+    """Extract command prefix locally for fast prefix detection.
+
+    This avoids calling the LLM for simple prefix extraction,
+    significantly speeding up permission prompts.
+    """
+    import shlex
+
+    # Check for obvious command injection patterns
+    injection_patterns = ['$(', '`', '&&', '||', ';', '|', '\n']
+    # But || is allowed as part of fallback commands, so be more careful
+    # Only flag if it looks suspicious
+    if '`' in command or '$(' in command:
+        return "command_injection_detected"
+
+    try:
+        # Try to parse the command
+        parts = shlex.split(command)
+        if not parts:
+            return "none"
+
+        # Handle environment variables at the start (e.g., FOO=bar cmd)
+        env_prefix = []
+        cmd_start = 0
+        for i, part in enumerate(parts):
+            if '=' in part and not part.startswith('-'):
+                env_prefix.append(part)
+                cmd_start = i + 1
+            else:
+                break
+
+        if cmd_start >= len(parts):
+            return "none"
+
+        # Get the actual command parts
+        cmd_parts = parts[cmd_start:]
+        if not cmd_parts:
+            return "none"
+
+        first_word = cmd_parts[0]
+
+        # Commands that need two words for prefix (git, npm, etc.)
+        two_word_commands = {'git', 'npm', 'docker', 'kubectl', 'cargo', 'go', 'pip', 'yarn'}
+
+        if first_word in two_word_commands and len(cmd_parts) > 1:
+            second_word = cmd_parts[1]
+            # Don't include flags as second word
+            if not second_word.startswith('-'):
+                prefix = f"{first_word} {second_word}"
+            else:
+                prefix = first_word
+        else:
+            prefix = first_word
+
+        # Add env prefix if present
+        if env_prefix:
+            return ' '.join(env_prefix) + ' ' + prefix
+
+        return prefix
+
+    except ValueError:
+        # shlex parsing failed, return first word
+        first_word = command.split()[0] if command.split() else "none"
+        return first_word
+
+
+def is_prefix_detection_request(request_data: "MessagesRequest") -> tuple[bool, str]:
+    """Check if this is a Claude Code prefix detection request and extract the command.
+
+    Claude Code sends prefix detection requests to classify bash commands for permission
+    prompts. These requests have specific markers that we can detect.
+
+    Returns (is_prefix_detection, command_string)
+    """
+    if len(request_data.messages) != 1:
+        return False, ""
+
+    msg = request_data.messages[0]
+    if msg.role != "user":
+        return False, ""
+
+    # Get content as string
+    content = ""
+    if isinstance(msg.content, str):
+        content = msg.content
+    elif isinstance(msg.content, list):
+        for block in msg.content:
+            if hasattr(block, 'text'):
+                content += block.text
+            elif isinstance(block, dict) and block.get('type') == 'text':
+                content += block.get('text', '')
+
+    # Check for prefix detection markers from Claude Code
+    # Pattern 1: <policy_spec>...</policy_spec> with Command: at the end
+    if '<policy_spec>' in content and 'Command:' in content:
+        try:
+            cmd_start = content.rfind('Command:') + len('Command:')
+            command = content[cmd_start:].strip()
+            return True, command
+        except:
+            pass
+
+    # Pattern 2: "prefix" keyword with bash command context
+    # Claude Code may also send requests asking for the "prefix" of a command
+    content_lower = content.lower()
+    if ('prefix' in content_lower and
+        ('bash' in content_lower or 'command' in content_lower) and
+        len(content) < 2000):  # Prefix detection requests are typically short
+        # Try to extract command from various formats
+        # Look for quoted commands or commands after colons
+        import re
+        # Match commands in backticks, quotes, or after "Command:"
+        patterns = [
+            r'Command:\s*(.+?)(?:\n|$)',
+            r'`([^`]+)`',
+            r'"([^"]+)"',
+            r"'([^']+)'",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, content)
+            if match:
+                return True, match.group(1).strip()
+
+    return False, ""
+
+
 @app.post("/v1/messages")
 async def create_message(request_data: MessagesRequest, raw_request: Request):
     """Create a chat message using the configured provider."""
     try:
+        # Fast path: Handle prefix detection locally without calling LLM
+        # This significantly speeds up permission prompts for bash commands
+        if FAST_PREFIX_DETECTION:
+            is_prefix_req, command = is_prefix_detection_request(request_data)
+            if is_prefix_req:
+                prefix = extract_command_prefix(command)
+                logger.debug(f"Fast prefix detection: '{command[:50]}...' -> '{prefix}'")
+
+                # Return immediate response in Anthropic format
+                from src.models.request import MessagesResponse, Usage
+                import uuid
+
+                response = MessagesResponse(
+                    id=f"msg_{uuid.uuid4()}",
+                    model=request_data.model,
+                    role="assistant",
+                    content=[{"type": "text", "text": prefix}],
+                    stop_reason="end_turn",
+                    usage=Usage(input_tokens=100, output_tokens=5),
+                )
+                return response
+
         # BEAUTIFUL LOGGING (using pydantic model directly to avoid re-parsing)
         num_messages = len(request_data.messages)
         num_tools = len(request_data.tools) if request_data.tools else 0

@@ -107,6 +107,7 @@ Popular free NVIDIA NIM models include:
 | `NVIDIA_NIM_API_KEY` | NVIDIA NIM API key | - |
 | `NVIDIA_NIM_RATE_LIMIT` | NIM requests per second rate limit | `40` |
 | `OPENAI_BASE_URL` | Custom OpenAI base URL | - |
+| `FAST_PREFIX_DETECTION` | Handle bash prefix detection locally (skips LLM) | `true` |
 
 Model mappings by provider:
 
@@ -229,6 +230,18 @@ All providers support tool calling with proper streaming semantics:
 - Parallel tool calls
 - Tool result formatting
 - Streaming tool responses
+
+### Fast Prefix Detection
+
+When Claude Code executes bash commands, it makes a separate LLM call to classify the command prefix for permission prompts. With slow upstream providers, this can cause significant delays (30+ seconds).
+
+The `FAST_PREFIX_DETECTION` feature (enabled by default) handles these classification requests locally without calling the LLM, providing instant permission prompts.
+
+To disable and use the LLM for prefix detection:
+
+```dotenv
+FAST_PREFIX_DETECTION=false
+```
 
 ### Log Level Control
 

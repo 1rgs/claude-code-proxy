@@ -11,7 +11,7 @@ A proxy server that lets you use Anthropic clients (like Claude Code) with OpenA
 - Python 3.10+
 - API keys for your chosen provider(s)
 - [uv](https://github.com/astral-sh/uv) package manager
-- [Claude Code](https://github.com/anthropics/claude-code) installed
+- [Claude Code](https://github.com/anthropics/claude-code)
 
 ### Installation
 

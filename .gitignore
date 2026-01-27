@@ -39,3 +39,4 @@ ENV/
 *.swp
 *.swo
 .claude
+.serena

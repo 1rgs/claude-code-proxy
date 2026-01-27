@@ -320,6 +320,17 @@ class NVIDIANIMProvider(BaseProvider):
                     item.get("text", "") for item in reasoning_details if isinstance(item, dict)
                 )
         content_text = message.get("content", "")
+
+        # Fallback: parse <think> tags from content if no reasoning found
+        if not reasoning_content and content_text:
+            import re
+            think_pattern = re.compile(r'<think>(.*?)</think>', re.DOTALL)
+            think_matches = think_pattern.findall(content_text)
+            if think_matches:
+                reasoning_content = "\n".join(think_matches)
+                # Remove <think> tags from text content
+                content_text = think_pattern.sub('', content_text).strip()
+
         tool_calls = message.get("tool_calls")
         finish_reason = (
             choices[0].get("finish_reason", "stop")
@@ -446,6 +457,10 @@ class NVIDIANIMProvider(BaseProvider):
 
         # Track usage from LiteLLM
         actual_usage = None
+
+        # For <think> tag parsing in streaming
+        inside_think_tag = False
+        tag_buffer = ""  # Buffer for detecting partial tags
 
         async for chunk in litellm_generator:
             # Extract choice and delta
@@ -616,21 +631,92 @@ class NVIDIANIMProvider(BaseProvider):
                     next_block_index += 1
                     text_block_closed = False
 
-            # Process text content (skip when tool_calls started)
-            if delta_content and delta_content != "" and not tool_calls_started:
-                # Close thinking if still open
-                if thinking_block_started:
-                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
-                    thinking_block_started = False
-
-                if text_block_closed:
-                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                    current_text_index = next_block_index
-                    next_block_index += 1
-                    text_block_closed = False
-
-                accumulated_text += delta_content
-                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': delta_content}})}\n\n"
+            # Process text content with <think> tag parsing (skip when tool_calls started or delta_reasoning present)
+            if delta_content and delta_content != "" and not tool_calls_started and not delta_reasoning:
+                # Parse <think> tags from content stream
+                tag_buffer += delta_content
+                while tag_buffer:
+                    if inside_think_tag:
+                        # Look for </think> closing tag
+                        end_idx = tag_buffer.find("</think>")
+                        if end_idx != -1:
+                            # Emit thinking content up to the tag
+                            thinking_chunk = tag_buffer[:end_idx]
+                            if thinking_chunk:
+                                if not thinking_block_started:
+                                    if not text_block_closed:
+                                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                        text_block_closed = True
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                    thinking_index = next_block_index
+                                    next_block_index += 1
+                                    thinking_block_started = True
+                                accumulated_reasoning += thinking_chunk
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': thinking_chunk}})}\n\n"
+                            # Close thinking block
+                            if thinking_block_started:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                thinking_block_started = False
+                            inside_think_tag = False
+                            tag_buffer = tag_buffer[end_idx + 8:]  # len("</think>") = 8
+                        elif len(tag_buffer) > 8:
+                            # Emit all but last 8 chars (in case </think> is split)
+                            safe_chunk = tag_buffer[:-8]
+                            tag_buffer = tag_buffer[-8:]
+                            if not thinking_block_started:
+                                if not text_block_closed:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                    text_block_closed = True
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                                thinking_index = next_block_index
+                                next_block_index += 1
+                                thinking_block_started = True
+                            accumulated_reasoning += safe_chunk
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': safe_chunk}})}\n\n"
+                            break
+                        else:
+                            break  # Wait for more data
+                    else:
+                        # Look for <think> opening tag
+                        start_idx = tag_buffer.find("<think>")
+                        if start_idx != -1:
+                            # Emit text content before the tag
+                            text_chunk = tag_buffer[:start_idx]
+                            if text_chunk:
+                                if thinking_block_started:
+                                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                    thinking_block_started = False
+                                if text_block_closed:
+                                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                    current_text_index = next_block_index
+                                    next_block_index += 1
+                                    text_block_closed = False
+                                accumulated_text += text_chunk
+                                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': text_chunk}})}\n\n"
+                            # Close text block before thinking
+                            if not text_block_closed:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                                text_block_closed = True
+                            inside_think_tag = True
+                            tag_buffer = tag_buffer[start_idx + 7:]  # len("<think>") = 7
+                        elif len(tag_buffer) > 7:
+                            # Check if buffer might contain partial <think> tag
+                            # Emit all but last 7 chars to be safe
+                            safe_chunk = tag_buffer[:-7]
+                            tag_buffer = tag_buffer[-7:]
+                            if thinking_block_started:
+                                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                                thinking_block_started = False
+                            if text_block_closed:
+                                yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                                current_text_index = next_block_index
+                                next_block_index += 1
+                                text_block_closed = False
+                            accumulated_text += safe_chunk
+                            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': safe_chunk}})}\n\n"
+                            break
+                        else:
+                            break  # Wait for more data
 
             # Handle finish_reason
             if finish_reason and not message_delta["stop_reason"]:
@@ -672,6 +758,31 @@ class NVIDIANIMProvider(BaseProvider):
                 yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'})}\n\n"
                 yield "[DONE]\n"
                 break
+
+        # Flush remaining tag_buffer content
+        if tag_buffer:
+            if inside_think_tag:
+                # Remaining content is thinking
+                if not thinking_block_started:
+                    if not text_block_closed:
+                        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': current_text_index})}\n\n"
+                        text_block_closed = True
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'thinking', 'thinking': ''}})}\n\n"
+                    thinking_index = next_block_index
+                    next_block_index += 1
+                    thinking_block_started = True
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': thinking_index, 'delta': {'type': 'thinking_delta', 'thinking': tag_buffer}})}\n\n"
+            else:
+                # Remaining content is text
+                if thinking_block_started:
+                    yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': thinking_index})}\n\n"
+                    thinking_block_started = False
+                if text_block_closed:
+                    yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': next_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
+                    current_text_index = next_block_index
+                    next_block_index += 1
+                    text_block_closed = False
+                yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': current_text_index, 'delta': {'type': 'text_delta', 'text': tag_buffer}})}\n\n"
 
         # If we didn't get a finish_reason, close any open blocks
         if not message_delta["stop_reason"]:

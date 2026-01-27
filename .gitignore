@@ -38,3 +38,4 @@ ENV/
 .vscode/
 *.swp
 *.swo
+.claude

@@ -249,6 +249,8 @@ class NVIDIANIMProvider(BaseProvider):
             anthropic_request.thinking, "enabled", True
         ):
             user_extra_body.setdefault("thinking", {"type": "enabled"})
+            # MiniMax uses reasoning_split to separate thinking from content
+            user_extra_body.setdefault("reasoning_split", True)
         env_extra_body = self._nim_params.get("extra_body", {})
         if env_extra_body:
             for key, val in env_extra_body.items():
@@ -310,6 +312,13 @@ class NVIDIANIMProvider(BaseProvider):
         choices = response_dict.get("choices", [{}])
         message = choices[0].get("message", {}) if choices and len(choices) > 0 else {}
         reasoning_content = message.get("reasoning_content")
+        # MiniMax uses reasoning_details array instead of reasoning_content
+        if not reasoning_content:
+            reasoning_details = message.get("reasoning_details")
+            if reasoning_details and isinstance(reasoning_details, list):
+                reasoning_content = "\n".join(
+                    item.get("text", "") for item in reasoning_details if isinstance(item, dict)
+                )
         content_text = message.get("content", "")
         tool_calls = message.get("tool_calls")
         finish_reason = (
@@ -520,6 +529,17 @@ class NVIDIANIMProvider(BaseProvider):
                     if not isinstance(delta, dict)
                     else (delta.get("reasoning_content") or delta.get("reasoning"))
                 )
+                # MiniMax uses reasoning_details array instead of reasoning_content
+                if not delta_reasoning:
+                    reasoning_details = (
+                        getattr(delta, "reasoning_details", None)
+                        if not isinstance(delta, dict)
+                        else delta.get("reasoning_details")
+                    )
+                    if reasoning_details and isinstance(reasoning_details, list):
+                        delta_reasoning = "".join(
+                            item.get("text", "") for item in reasoning_details if isinstance(item, dict)
+                        )
                 delta_tool_calls = (
                     getattr(delta, "tool_calls", None)
                     if not isinstance(delta, dict)

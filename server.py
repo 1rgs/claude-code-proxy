@@ -403,6 +403,8 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 input_tokens = get_robust_token_count(
                     messages=request_data.messages,
                     model=request_data.model,
+                    system=request_data.system,
+                    tools=request_data.tools,
                 )
 
                 return StreamingResponse(
@@ -430,9 +432,11 @@ async def create_message(request_data: MessagesRequest, raw_request: Request):
                 )
 
                 # Count input tokens for streaming
+                # Note: system prompt is already in messages for LiteLLM path, but tools are separate
                 input_tokens = get_robust_token_count(
                     messages=litellm_request["messages"],
                     model=litellm_request["model"],
+                    tools=litellm_request.get("tools"),
                 )
 
                 # Include usage in stream if possible
@@ -591,9 +595,11 @@ async def count_tokens(request_data: TokenCountRequest, raw_request: Request):
             )
 
         # Count tokens (run in thread to avoid blocking the event loop)
+        # Note: system prompt is already in messages after prepare_request, but tools are separate
         token_count = get_robust_token_count(
             messages=litellm_request["messages"],
             model=litellm_request.get("model") or request_data.model,
+            tools=litellm_request.get("tools"),
         )
 
         return TokenCountResponse(input_tokens=token_count)

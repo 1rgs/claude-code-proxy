@@ -2,7 +2,7 @@
 
 import logging
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 from litellm import token_counter
 import tiktoken
 
@@ -16,12 +16,23 @@ MODEL_TO_ENCODING = {
 }
 
 
-def get_robust_token_count(messages: List[Dict[str, Any]], model: str) -> int:
+def get_robust_token_count(
+    messages: List[Dict[str, Any]],
+    model: str,
+    system: Optional[Union[str, List[Any]]] = None,
+    tools: Optional[List[Any]] = None,
+) -> int:
     """
     Count tokens with multiple fallback layers:
     1. litellm.token_counter (primary)
     2. tiktoken with manual mapping or cl100k_base (secondary)
     3. Character-based heuristic (final fallback)
+
+    Args:
+        messages: List of message dicts
+        model: Model name for tokenizer selection
+        system: Optional system prompt (string or list of content blocks)
+        tools: Optional list of tool definitions
     """
     # 1. Primary: LiteLLM
     try:
@@ -77,6 +88,48 @@ def get_robust_token_count(messages: List[Dict[str, Any]], model: str) -> int:
             # OpenAI typically adds ~4-5 tokens per message
             total_tokens += 4
 
+        # Count system prompt tokens (if provided)
+        if system:
+            if isinstance(system, str):
+                total_tokens += len(encoding.encode(system))
+            elif isinstance(system, list):
+                for block in system:
+                    if hasattr(block, "text"):
+                        total_tokens += len(encoding.encode(block.text))
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        total_tokens += len(encoding.encode(block.get("text", "")))
+            # Add overhead for system message structure
+            total_tokens += 4
+
+        # Count tool definition tokens (if provided)
+        if tools:
+            for tool in tools:
+                # Tool name
+                name = tool.name if hasattr(tool, "name") else tool.get("name", "")
+                if name:
+                    total_tokens += len(encoding.encode(name))
+
+                # Tool description
+                desc = (
+                    tool.description
+                    if hasattr(tool, "description")
+                    else tool.get("description", "")
+                )
+                if desc:
+                    total_tokens += len(encoding.encode(desc))
+
+                # Tool input schema (JSON)
+                schema = (
+                    tool.input_schema
+                    if hasattr(tool, "input_schema")
+                    else tool.get("input_schema", {})
+                )
+                if schema:
+                    total_tokens += len(encoding.encode(json.dumps(schema)))
+
+                # Overhead per tool definition
+                total_tokens += 10
+
         # Add overhead for the final response trigger
         total_tokens += 3
 
@@ -102,6 +155,35 @@ def get_robust_token_count(messages: List[Dict[str, Any]], model: str) -> int:
                         text = block.get("text", "") or block.get("content", "")
                         if isinstance(text, str):
                             total_chars += len(text)
+
+        # Count system prompt characters
+        if system:
+            if isinstance(system, str):
+                total_chars += len(system)
+            elif isinstance(system, list):
+                for block in system:
+                    if hasattr(block, "text"):
+                        total_chars += len(block.text)
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        total_chars += len(block.get("text", ""))
+
+        # Count tool definition characters
+        if tools:
+            for tool in tools:
+                name = tool.name if hasattr(tool, "name") else tool.get("name", "")
+                desc = (
+                    tool.description
+                    if hasattr(tool, "description")
+                    else tool.get("description", "")
+                )
+                schema = (
+                    tool.input_schema
+                    if hasattr(tool, "input_schema")
+                    else tool.get("input_schema", {})
+                )
+                total_chars += len(name or "")
+                total_chars += len(desc or "")
+                total_chars += len(json.dumps(schema)) if schema else 0
 
         # English often averages ~4 characters per token
         heuristic_count = max(1, total_chars // 4)

@@ -1,6 +1,6 @@
 # cc-nim
 
-**NVIDIA NIM Proxy for Claude Code** - Use Claude Code CLI for free with NVIDIA NIM's unlimited API (40 req/min).
+Minimal NVIDIA NIM proxy for Claude Code. Use Claude Code CLI for free with NVIDIA NIM's unlimited API (40 req/min).
 
 ## Quick Start
 
@@ -23,8 +23,8 @@ Edit `.env`:
 
 ```dotenv
 NVIDIA_NIM_API_KEY=nvapi-your-key-here
-BIG_MODEL=qwen/qwen2.5-coder-32b-instruct
-SMALL_MODEL=qwen/qwen2.5-coder-32b-instruct
+BIG_MODEL=moonshotai/kimi-k2-instruct
+SMALL_MODEL=moonshotai/kimi-k2-instruct
 ```
 
 ### 3. Run
@@ -51,7 +51,7 @@ Popular choices:
 
 | Model | Description |
 |-------|-------------|
-| `qwen/qwen2.5-coder-32b-instruct` | Best for coding tasks |
+| `moonshotai/kimi-k2-instruct` | Best for coding tasks |
 | `deepseek-ai/deepseek-r1` | DeepSeek R1 reasoning |
 | `nvidia/llama-3.3-nemotron-super-49b-v1` | NVIDIA's Llama variant |
 | `meta/llama-3.1-405b-instruct` | Meta's largest Llama |
@@ -63,8 +63,8 @@ Browse all models at [build.nvidia.com](https://build.nvidia.com/explore/discove
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `NVIDIA_NIM_API_KEY` | Your NVIDIA API key | required |
-| `BIG_MODEL` | Model for Sonnet/Opus requests | `qwen/qwen2.5-coder-32b-instruct` |
-| `SMALL_MODEL` | Model for Haiku requests | `qwen/qwen2.5-coder-32b-instruct` |
+| `BIG_MODEL` | Model for Sonnet/Opus requests | `moonshotai/kimi-k2-instruct` |
+| `SMALL_MODEL` | Model for Haiku requests | `moonshotai/kimi-k2-instruct` |
 | `NVIDIA_NIM_BASE_URL` | NIM endpoint | `https://integrate.api.nvidia.com/v1` |
 | `NVIDIA_NIM_RATE_LIMIT` | Requests per window | `40` |
 | `NVIDIA_NIM_RATE_WINDOW` | Rate limit window (seconds) | `60` |

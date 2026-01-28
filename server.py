@@ -36,8 +36,8 @@ logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 # Models
 # =============================================================================
 
-BIG_MODEL = os.getenv("BIG_MODEL", "qwen/qwen2.5-coder-32b-instruct")
-SMALL_MODEL = os.getenv("SMALL_MODEL", "qwen/qwen2.5-coder-32b-instruct")
+BIG_MODEL = os.getenv("BIG_MODEL", "moonshotai/kimi-k2-instruct")
+SMALL_MODEL = os.getenv("SMALL_MODEL", "moonshotai/kimi-k2-instruct")
 
 
 class ContentBlockText(BaseModel):

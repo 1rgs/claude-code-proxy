@@ -746,6 +746,45 @@ class NVIDIANIMProvider(BaseProvider):
                         )
                     continue
 
+                # user with list content (text + tool_result) -> separate messages for text and tool_results
+                if msg.role == "user" and isinstance(content, list):
+                    text_parts = []
+                    tool_results = []
+
+                    for block in content:
+                        btype = _block_type(block)
+                        if btype == "text":
+                            t = getattr(block, "text", None) or (
+                                block.get("text") if isinstance(block, dict) else ""
+                            )
+                            text_parts.append(t)
+                        elif btype == "tool_result":
+                            bid = getattr(block, "tool_use_id", None) or (
+                                block.get("tool_use_id", "")
+                                if isinstance(block, dict)
+                                else ""
+                            )
+                            bcontent = (
+                                getattr(block, "content", None)
+                                if not isinstance(block, dict)
+                                else block.get("content")
+                            )
+                            flat = self._parse_tool_result_content(bcontent)
+                            tool_results.append(
+                                {"role": "tool", "tool_call_id": bid, "content": flat}
+                            )
+
+                    # Add tool result messages first
+                    for tr in tool_results:
+                        converted.append(tr)
+
+                    # Add user text message if there's any text content
+                    if text_parts:
+                        converted.append(
+                            {"role": "user", "content": "\n".join(text_parts)}
+                        )
+                    continue
+
                 # assistant with list content -> content string, tool_calls, reasoning_content
                 if msg.role == "assistant" and isinstance(content, list):
                     text_parts = []
@@ -818,12 +857,10 @@ class NVIDIANIMProvider(BaseProvider):
                             block.get("thinking") if isinstance(block, dict) else ""
                         )
                         reasoning_parts.append(th)
-                    elif btype == "tool_use":
-                        binput = getattr(block, "input", None) or (
-                            block.get("input", {}) if isinstance(block, dict) else {}
-                        )
-                        text_content += f"[Tool: {getattr(block, 'name', '')}]\n{json.dumps(binput)}\n\n"
+                    # Note: tool_use and tool_result blocks should be handled by their specific handlers above
+                    # If we reach this point with tool_use/tool_result, it's an invalid message format
                     elif btype == "tool_result":
+                        # Only handle tool_result here for user messages with mixed content
                         tool_id = getattr(block, "tool_use_id", None) or (
                             block.get("tool_use_id", "")
                             if isinstance(block, dict)

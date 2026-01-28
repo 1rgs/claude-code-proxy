@@ -28,11 +28,6 @@ litellm.set_verbose = False
 litellm.success_callback = []
 litellm.failure_callback = []
 
-# Enable modify_params to handle thinking blocks compatibility
-# When thinking_blocks are missing from assistant messages (common with OpenAI-compatible clients),
-# LiteLLM will automatically drop the thinking param to avoid Anthropic 400 errors
-litellm.modify_params = True
-
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s",

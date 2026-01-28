@@ -789,7 +789,7 @@ class NVIDIANIMProvider(BaseProvider):
                             )
                     m = {
                         "role": "assistant",
-                        "content": "\n".join(text_parts) if text_parts else None,
+                        "content": "\n".join(text_parts) if text_parts else "",
                     }
                     if tool_calls:
                         m["tool_calls"] = tool_calls

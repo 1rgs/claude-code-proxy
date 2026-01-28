@@ -1,6 +1,6 @@
-# Claude Code Proxy for NVIDIA NIM
+# cc-nim
 
-Use **Claude Code CLI for free** with NVIDIA NIM's unlimited API. This lightweight proxy converts Claude Code's Anthropic API requests to NVIDIA NIM format.
+**NVIDIA NIM Proxy for Claude Code** - Use Claude Code CLI for free with NVIDIA NIM's unlimited API.
 
 ## Quick Start
 
@@ -13,8 +13,8 @@ Use **Claude Code CLI for free** with NVIDIA NIM's unlimited API. This lightweig
 ### 2. Install & Configure
 
 ```bash
-git clone https://github.com/Alishahryar1/claude-code-proxy.git
-cd claude-code-proxy
+git clone https://github.com/Alishahryar1/cc-nim.git
+cd cc-nim
 
 cp .env.example .env
 ```
@@ -45,14 +45,14 @@ That's it! Claude Code now uses NVIDIA NIM for free.
 
 ## Available Models
 
+Browse all models at [build.nvidia.com](https://build.nvidia.com/explore/discover)
+
 | Model | Description |
 |-------|-------------|
 | `qwen/qwen2.5-coder-32b-instruct` | Best for coding tasks |
 | `deepseek-ai/deepseek-r1` | DeepSeek R1 reasoning |
 | `nvidia/llama-3.3-nemotron-super-49b-v1` | NVIDIA's Llama variant |
 | `meta/llama-3.1-405b-instruct` | Meta's largest Llama |
-
-Browse all models at [build.nvidia.com](https://build.nvidia.com/explore/discover)
 
 ## Configuration
 
@@ -63,7 +63,6 @@ Browse all models at [build.nvidia.com](https://build.nvidia.com/explore/discove
 | `SMALL_MODEL` | Model for Haiku requests | `qwen/qwen2.5-coder-32b-instruct` |
 | `NVIDIA_NIM_BASE_URL` | NIM endpoint | `https://integrate.api.nvidia.com/v1` |
 | `NVIDIA_NIM_RATE_LIMIT` | Requests per minute | `40` |
-| `FAST_PREFIX_DETECTION` | Skip LLM for bash prefix detection | `true` |
 
 ## Adding Your Own Provider
 
@@ -85,12 +84,3 @@ class MyProvider(BaseProvider):
         # Convert to Anthropic response format
         pass
 ```
-
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /v1/messages` | Chat completion (streaming/non-streaming) |
-| `POST /v1/messages/count_tokens` | Token counting |
-| `GET /` | Server status |
-| `GET /health` | Health check |

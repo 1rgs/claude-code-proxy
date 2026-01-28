@@ -1,5 +1,5 @@
 [project]
-name = "claude-code-proxy"
+name = "cc-nim"
 version = "2.0.0"
 description = "Proxy that translates Claude Code CLI (Anthropic API) to NVIDIA NIM"
 readme = "README.md"

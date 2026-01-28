@@ -1,6 +1,6 @@
 # cc-nim
 
-**NVIDIA NIM Proxy for Claude Code** - Use Claude Code CLI for free with NVIDIA NIM's unlimited API (40 req/min).
+**NVIDIA NIM Proxy for Claude Code** - Use Claude Code CLI for free with NVIDIA NIM's unlimited API (40 req/s).
 
 ## Quick Start
 

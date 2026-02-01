@@ -92,6 +92,9 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Get Anthropic base URL from environment (if set)
+ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL")
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
@@ -1142,7 +1145,12 @@ async def create_message(
                 logger.debug(f"Using Gemini API key for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
-            logger.debug(f"Using Anthropic API key for model: {request.model}")
+            # Use custom Anthropic base URL if configured
+            if ANTHROPIC_BASE_URL:
+                litellm_request["api_base"] = ANTHROPIC_BASE_URL
+                logger.debug(f"Using Anthropic API key and custom base URL {ANTHROPIC_BASE_URL} for model: {request.model}")
+            else:
+                logger.debug(f"Using Anthropic API key for model: {request.model}")
         
         # For OpenAI models - modify request format to work with limitations
         if "openai" in litellm_request["model"] and "messages" in litellm_request:
@@ -1444,6 +1452,10 @@ async def count_tokens(
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
                 token_counter_args["api_base"] = OPENAI_BASE_URL
+
+            # Add custom base URL for Anthropic models if configured
+            elif request.model.startswith("anthropic/") and ANTHROPIC_BASE_URL:
+                token_counter_args["api_base"] = ANTHROPIC_BASE_URL
             
             # Count tokens
             token_count = token_counter(**token_counter_args)

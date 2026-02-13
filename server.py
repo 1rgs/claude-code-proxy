@@ -15,6 +15,21 @@ import re
 from datetime import datetime
 import sys
 
+# #region agent log
+DEBUG_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cursor", "debug.log")
+def _debug_log(message: str, data: Optional[Dict[str, Any]] = None, hypothesis_id: Optional[str] = None, run_id: str = "claude-proxy"):
+    try:
+        payload = {"id": f"log_{int(time.time()*1000)}", "timestamp": int(time.time() * 1000), "location": "server.py", "message": message, "runId": run_id}
+        if data is not None:
+            payload["data"] = data
+        if hypothesis_id is not None:
+            payload["hypothesisId"] = hypothesis_id
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
+# #endregion
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -88,6 +103,11 @@ VERTEX_LOCATION = os.environ.get("VERTEX_LOCATION", "unset")
 
 # Option to use Gemini API key instead of ADC for Vertex AI
 USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
+VERTEX_CREDENTIALS_PATH = os.environ.get("VERTEX_CREDENTIALS_PATH")
+
+# Optional explicit JSON credentials path for Vertex auth
+if USE_VERTEX_AUTH and VERTEX_CREDENTIALS_PATH:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = VERTEX_CREDENTIALS_PATH
 
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
@@ -212,6 +232,8 @@ class MessagesRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('vertex_ai/'):
+            clean_v = clean_v[10:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -222,20 +244,38 @@ class MessagesRequest(BaseModel):
 
         # Map Haiku to SMALL_MODEL based on provider preference
         elif 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+        # Map Sonnet or Opus to BIG_MODEL based on provider preference
+        elif 'sonnet' in clean_v.lower() or 'opus' in clean_v.lower() or clean_v == BIG_MODEL:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
+                mapped = True
+
+        # Exact match for small model (e.g. client sent our SMALL_MODEL id from /v1/models)
+        elif clean_v == SMALL_MODEL:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
         # Add prefixes to non-mapped models if they match known lists
@@ -252,7 +292,7 @@ class MessagesRequest(BaseModel):
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
              # If no mapping occurred and no prefix exists, log warning or decide default
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'vertex_ai/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -290,25 +330,43 @@ class TokenCountRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith('gemini/'):
             clean_v = clean_v[7:]
+        elif clean_v.startswith('vertex_ai/'):
+            clean_v = clean_v[10:]
 
         # --- Mapping Logic --- START ---
         mapped = False
         # Map Haiku to SMALL_MODEL based on provider preference
         if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+        # Map Sonnet or Opus to BIG_MODEL; exact match for SMALL_MODEL
+        elif 'sonnet' in clean_v.lower() or 'opus' in clean_v.lower() or clean_v == BIG_MODEL:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
+                mapped = True
+        elif clean_v == SMALL_MODEL:
+            if PREFERRED_PROVIDER == "google" and USE_VERTEX_AUTH:
+                new_model = f"vertex_ai/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+                new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            else:
+                new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
 
         # Add prefixes to non-mapped models if they match known lists
@@ -324,7 +382,7 @@ class TokenCountRequest(BaseModel):
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
+             if not v.startswith(('openai/', 'gemini/', 'anthropic/', 'vertex_ai/')):
                  logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
              new_model = v # Ensure we return the original if no rule applied
 
@@ -647,6 +705,8 @@ def convert_litellm_to_anthropic(litellm_response: Union[Dict[str, Any], Any],
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("vertex_ai/"):
+            clean_model = clean_model[len("vertex_ai/"):]
         
         # Check if this is a Claude model (which supports content blocks)
         is_claude_model = clean_model.startswith("claude-")
@@ -1092,12 +1152,57 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
         # Send final [DONE] marker
         yield "data: [DONE]\n\n"
 
+def _model_display_name(model_id: str) -> str:
+    """Return a human-readable display name for a model id (e.g. claude-opus-4-6 -> Claude Opus 4.6)."""
+    if not model_id:
+        return "Unknown"
+    # Strip version suffix like @20250929
+    base = model_id.split("@")[0] if "@" in model_id else model_id
+    # Title-case and replace hyphens with spaces for display
+    return base.replace("-", " ").title()
+
+
+@app.get("/v1/models")
+async def list_models(
+    limit: Optional[int] = 20,
+    after_id: Optional[str] = None,
+    before_id: Optional[str] = None,
+):
+    """List models supported by this proxy (Anthropic-compatible format). Returns BIG_MODEL and SMALL_MODEL so the client offers only models that work."""
+    models = [
+        {
+            "id": BIG_MODEL,
+            "created_at": "2026-02-04T00:00:00Z",
+            "display_name": _model_display_name(BIG_MODEL),
+            "type": "model",
+        },
+        {
+            "id": SMALL_MODEL,
+            "created_at": "2025-10-01T00:00:00Z",
+            "display_name": _model_display_name(SMALL_MODEL),
+            "type": "model",
+        },
+    ]
+    # Apply limit (default 20)
+    limit = min(max(1, limit or 20), 1000)
+    data = models[:limit]
+    return {
+        "data": data,
+        "first_id": data[0]["id"] if data else None,
+        "last_id": data[-1]["id"] if data else None,
+        "has_more": False,
+    }
+
+
 @app.post("/v1/messages")
 async def create_message(
     request: MessagesRequest,
     raw_request: Request
 ):
     try:
+        # #region agent log
+        _debug_log("request_received", {"model": request.model, "stream": request.stream}, "A")
+        # #endregion
         # print the body here
         body = await raw_request.body()
     
@@ -1131,22 +1236,34 @@ async def create_message(
                 logger.debug(f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}")
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
-        elif request.model.startswith("gemini/"):
-            if USE_VERTEX_AUTH:
+        elif request.model.startswith("gemini/") or request.model.startswith("vertex_ai/"):
+            if USE_VERTEX_AUTH or request.model.startswith("vertex_ai/"):
                 litellm_request["vertex_project"] = VERTEX_PROJECT
                 litellm_request["vertex_location"] = VERTEX_LOCATION
                 litellm_request["custom_llm_provider"] = "vertex_ai"
-                logger.debug(f"Using Gemini ADC with project={VERTEX_PROJECT}, location={VERTEX_LOCATION} and model: {request.model}")
+                logger.debug(f"Using Vertex auth with project={VERTEX_PROJECT}, location={VERTEX_LOCATION} and model: {request.model}")
             else:
                 litellm_request["api_key"] = GEMINI_API_KEY
                 logger.debug(f"Using Gemini API key for model: {request.model}")
         else:
             litellm_request["api_key"] = ANTHROPIC_API_KEY
             logger.debug(f"Using Anthropic API key for model: {request.model}")
-        
-        # For OpenAI models - modify request format to work with limitations
-        if "openai" in litellm_request["model"] and "messages" in litellm_request:
-            logger.debug(f"Processing OpenAI model request: {litellm_request['model']}")
+        # #region agent log
+        provider = "anthropic"
+        if request.model.startswith("openai/"):
+            provider = "openai"
+        elif request.model.startswith("vertex_ai/"):
+            provider = "vertex_ai"
+        elif request.model.startswith("gemini/"):
+            provider = "gemini"
+        _debug_log("provider_selected", {"model": litellm_request.get("model"), "provider": provider, "vertex_project": VERTEX_PROJECT if provider == "vertex_ai" else None}, "B")
+        # #endregion
+        # For OpenAI and Vertex AI - convert content blocks to plain strings (both reject list content for user/system)
+        if (
+            ("openai" in litellm_request["model"] or "vertex_ai" in litellm_request["model"])
+            and "messages" in litellm_request
+        ):
+            logger.debug(f"Processing request message format for: {litellm_request['model']}")
             
             # For OpenAI models, we need to convert content blocks to simple strings
             # and handle other requirements
@@ -1281,7 +1398,19 @@ async def create_message(
                 elif msg.get("content") is None:
                     logger.warning(f"Message {i} has None content - replacing with placeholder")
                     litellm_request["messages"][i]["content"] = "..." # Fallback placeholder
-        
+
+        # Vertex AI (Claude) expects system as a top-level parameter, not in messages array
+        if (
+            litellm_request.get("custom_llm_provider") == "vertex_ai"
+            and litellm_request.get("messages")
+            and litellm_request["messages"][0].get("role") == "system"
+        ):
+            system_content = litellm_request["messages"][0].get("content")
+            if isinstance(system_content, str) and system_content.strip():
+                litellm_request["system"] = system_content.strip()
+            litellm_request["messages"] = litellm_request["messages"][1:]
+            logger.debug("Moved Vertex AI system message to top-level 'system' and removed from messages")
+
         # Only log basic info about the request, not the full details
         logger.debug(f"Request for model: {litellm_request.get('model')}, stream: {litellm_request.get('stream', False)}")
         
@@ -1299,6 +1428,9 @@ async def create_message(
                 num_tools,
                 200  # Assuming success at this point
             )
+            # #region agent log
+            _debug_log("calling_backend_stream", {"model": litellm_request.get("model")}, "C")
+            # #endregion
             # Ensure we use the async version for streaming
             response_generator = await litellm.acompletion(**litellm_request)
             
@@ -1320,8 +1452,14 @@ async def create_message(
                 200  # Assuming success at this point
             )
             start_time = time.time()
+            # #region agent log
+            _debug_log("calling_backend_sync", {"model": litellm_request.get("model")}, "C")
+            # #endregion
             litellm_response = litellm.completion(**litellm_request)
             logger.debug(f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s")
+            # #region agent log
+            _debug_log("response_received", {"model": litellm_request.get("model"), "elapsed_s": round(time.time() - start_time, 2)}, "D")
+            # #endregion
             
             # Convert LiteLLM response to Anthropic format
             anthropic_response = convert_litellm_to_anthropic(litellm_response, request)
@@ -1331,7 +1469,9 @@ async def create_message(
     except Exception as e:
         import traceback
         error_traceback = traceback.format_exc()
-        
+        # #region agent log
+        _debug_log("exception", {"error_type": type(e).__name__, "error_message": str(e)}, "E")
+        # #endregion
         # Capture as much info as possible about the error
         error_details = {
             "error": str(e),
@@ -1403,6 +1543,8 @@ async def count_tokens(
             clean_model = clean_model[len("anthropic/"):]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/"):]
+        elif clean_model.startswith("vertex_ai/"):
+            clean_model = clean_model[len("vertex_ai/"):]
         
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(

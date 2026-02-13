@@ -4,67 +4,103 @@
 
 A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM. 🌉
 
-
 ![Anthropic API Proxy](pic.png)
 
 ## Quick Start ⚡
 
 ### Prerequisites
 
-- OpenAI API key 🔑
-- Google AI Studio (Gemini) API key (if using Google provider) 🔑
-- Google Cloud Project with Vertex AI API enabled (if using Application Default Credentials for Gemini) ☁️
-- [uv](https://github.com/astral-sh/uv) installed.
+- **OpenAI API key** — for default OpenAI mapping or fallback 🔑
+- **Google AI Studio (Gemini) API key** — only if using Google provider *without* Vertex auth 🔑
+- **Google Cloud + Vertex AI** — if using Vertex auth (`USE_VERTEX_AUTH=true`): project with Vertex AI API enabled, and (for Claude on Vertex) Claude models enabled in [Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude) ☁️
+- **Python 3.10+** and [uv](https://github.com/astral-sh/uv) (or use `./setup_env.sh` for a venv).
 
 ### Setup 🛠️
 
 #### From source
 
 1. **Clone this repository**:
+
    ```bash
    git clone https://github.com/1rgs/claude-code-proxy.git
    cd claude-code-proxy
    ```
 
 2. **Install uv** (if you haven't already):
+
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
+
    *(`uv` will handle dependencies based on `pyproject.toml` when you run the server)*
 
-3. **Configure Environment Variables**:
-   Copy the example environment file:
+3. **Configure environment**:
+
+   One universal template covers all provider modes (OpenAI, Google Gemini, Google Vertex, Anthropic):
+
    ```bash
    cp .env.example .env
    ```
-   Edit `.env` and fill in your API keys and model configurations:
 
-   *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
-   *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
-   *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
-   *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   Edit `.env`: set API keys and choose a preset (or set variables manually). Key variables:
 
-   **Mapping Logic:**
-   - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
-   - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
-   - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
+   - **Provider:** `PREFERRED_PROVIDER` — `openai` (default), `google`, or `anthropic`.
+   - **OpenAI:** `OPENAI_API_KEY` (required for default or fallback).
+   - **Google (Gemini API):** `GEMINI_API_KEY` when `PREFERRED_PROVIDER=google` and not using Vertex.
+   - **Google Vertex:** `USE_VERTEX_AUTH=true`, `VERTEX_PROJECT`, `VERTEX_LOCATION`. Authenticate via **gcloud** (`gcloud auth application-default login`) and leave `VERTEX_CREDENTIALS_PATH` unset, or set `VERTEX_CREDENTIALS_PATH` to a service account JSON key. Use for Gemini or **Claude models on Vertex** (see [Vertex AI setup](#google-vertex-ai-setup) below).
+   - **Models:** `BIG_MODEL` / `SMALL_MODEL` map `sonnet` / `haiku`; ignored when `PREFERRED_PROVIDER=anthropic`.
+   - **Anthropic:** `ANTHROPIC_API_KEY` only when proxying directly to Anthropic.
+
+   **Mapping:** With `openai`, models get `openai/` prefix; with `google` + Vertex auth, `vertex_ai/` (Gemini or Claude from Model Garden); with `google` and no Vertex, `gemini/` when using Gemini API key. See [Model mapping](#model-mapping️) and the presets in `.env.example`.
 
 4. **Run the server**:
+
+   From repo root (uv uses `.venv` by default):
+
    ```bash
    uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
    ```
-   *(`--reload` is optional, for development)*
+
+   *(`--reload` is optional, for development)*  
+   If you see a warning about `VIRTUAL_ENV` not matching `.venv`, you have an old virtualenv activated—run `deactivate`, then run the `uv run` command again.
+
+   **If you used `./setup_env.sh`** (creates `.venv`): from repo root run `uv run uvicorn ...` and uv will use `.venv` with no warning:
+
+   ```bash
+   ./setup_env.sh
+   uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
+   ```
+
+   Or activate and run: `source .venv/bin/activate` then `uvicorn server:app --host 0.0.0.0 --port 8082`.
+
+#### Google Vertex AI setup
+
+When using `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`, you can use **Gemini or Claude models** on Vertex.
+
+1. **Google Cloud:** Create or select a project and ensure billing is enabled. Enable the Vertex AI API: `gcloud services enable aiplatform.googleapis.com --project PROJECT_ID`
+2. **Claude on Vertex:** In [Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude), open the Claude model(s) you need and click **Enable**.
+3. **Authentication** — use one of these; you do **not** need both:
+   - **Option A — gcloud SDK (no key file):** If your Google account has Vertex AI access on the project, log in with [Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials):  
+     `gcloud auth application-default login`  
+     Set your project: `gcloud config set project PROJECT_ID`  
+     In `.env` set only `VERTEX_PROJECT` and `VERTEX_LOCATION`; leave `VERTEX_CREDENTIALS_PATH` unset (and do not set `GOOGLE_APPLICATION_CREDENTIALS`). The proxy will use your gcloud identity.
+   - **Option B — Service account JSON key:** Create a service account with at least `roles/aiplatform.user`, create a JSON key, and set `VERTEX_CREDENTIALS_PATH` in `.env` to that file path (or set `GOOGLE_APPLICATION_CREDENTIALS` externally). Use this for automation or when the machine has no interactive gcloud login.
+4. Leave `GEMINI_API_KEY` unset when using Vertex.
+5. **Scripts (optional):** `./setup_vertex_claude.sh -p PROJECT_ID --create-sa -y` enables the API, creates a service account and key, and writes `.env` (Option B). `./fill_env_from_gcloud.sh` fills `VERTEX_PROJECT` (and `VERTEX_CREDENTIALS_PATH` if a key file exists in the repo).
+
+**Vertex troubleshooting:**
+
+- **404 model not found** — Confirm the exact model ID and that the model is enabled in Model Garden for your project and region.
+- **Permission denied** — With gcloud: ensure your account has Vertex AI access on the project (e.g. Vertex AI User). With a key file: ensure the service account has `roles/aiplatform.user`.
+- **Location/region error** — Set `VERTEX_LOCATION` to a region supported by the model (e.g. `us-central1`).
+- **Auth error** — With gcloud: run `gcloud auth application-default login` and do not set `VERTEX_CREDENTIALS_PATH`. With a key file: ensure `VERTEX_CREDENTIALS_PATH` points to a readable JSON key file.
 
 #### Docker
 
-If using docker, download the example environment file to `.env` and edit it as described above.
+If using Docker, copy the universal env template into `.env` and edit as above:
+
 ```bash
-curl -O .env https://raw.githubusercontent.com/1rgs/claude-code-proxy/refs/heads/main/.env.example
+curl -o .env https://raw.githubusercontent.com/1rgs/claude-code-proxy/refs/heads/main/.env.example
 ```
 
 Then, you can either start the container with [docker compose](https://docs.docker.com/compose/) (preferred):
@@ -88,11 +124,13 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 ### Using with Claude Code 🎮
 
 1. **Install Claude Code** (if you haven't already):
+
    ```bash
    npm install -g @anthropic-ai/claude-code
    ```
 
 2. **Connect to your proxy**:
+
    ```bash
    ANTHROPIC_BASE_URL=http://localhost:8082 claude
    ```
@@ -101,17 +139,21 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 
 ## Model Mapping 🗺️
 
-The proxy automatically maps Claude models to either OpenAI or Gemini models based on the configured model:
+The proxy maps Claude client aliases (`haiku` / `sonnet`) to the configured backend:
 
-| Claude Model | Default Mapping | When BIG_MODEL/SMALL_MODEL is a Gemini model |
-|--------------|--------------|---------------------------|
-| haiku | openai/gpt-4o-mini | gemini/[model-name] |
-| sonnet | openai/gpt-4o | gemini/[model-name] |
+| Claude alias | Default (openai) | Google (Gemini API) | Google Vertex (`USE_VERTEX_AUTH=true`) |
+| --- | --- | --- | --- |
+| haiku | openai/gpt-4o-mini | gemini/[SMALL_MODEL] | vertex_ai/[SMALL_MODEL] |
+| sonnet | openai/gpt-4o | gemini/[BIG_MODEL] | vertex_ai/[BIG_MODEL] |
+
+With Vertex, `BIG_MODEL` / `SMALL_MODEL` can be **Gemini** or **Claude** model IDs from [Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude) (e.g. `claude-sonnet-4-5@20250929`). Enable the model in Model Garden for your project and region first.
 
 ### Supported Models
 
 #### OpenAI Models
+
 The following OpenAI models are supported with automatic `openai/` prefix handling:
+
 - o3-mini
 - o1
 - o1-mini
@@ -126,73 +168,44 @@ The following OpenAI models are supported with automatic `openai/` prefix handli
 - gpt-4.1-mini
 
 #### Gemini Models
-The following Gemini models are supported with automatic `gemini/` prefix handling:
+
+The following Gemini models are supported with automatic `gemini/` prefix handling (Gemini API key or Vertex):
+
 - gemini-2.5-pro
 - gemini-2.5-flash
 
+#### Vertex AI (Gemini and Claude)
+
+When `USE_VERTEX_AUTH=true` and `PREFERRED_PROVIDER=google`, the proxy uses the `vertex_ai/` prefix. You can set `BIG_MODEL` / `SMALL_MODEL` to:
+
+- **Gemini** — same model IDs as above (e.g. `gemini-2.5-pro`).
+- **Claude** — Model Garden IDs (e.g. `claude-sonnet-4-5@20250929`, `claude-haiku-4-5@20251001`). Enable the model in [Vertex AI Model Garden](https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude) for your project and region.
+
 ### Model Prefix Handling
+
 The proxy automatically adds the appropriate prefix to model names:
+
 - OpenAI models get the `openai/` prefix
 - Gemini models get the `gemini/` prefix
-- The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
+- Vertex models get the `vertex_ai/` prefix when `USE_VERTEX_AUTH=true` and `PREFERRED_PROVIDER=google`
+- The BIG_MODEL and SMALL_MODEL prefix depends on provider/auth mode (`openai/`, `gemini/`, or `vertex_ai/`)
 
 For example:
+
 - `gpt-4o` becomes `openai/gpt-4o`
 - `gemini-2.5-pro-preview-03-25` becomes `gemini/gemini-2.5-pro-preview-03-25`
 - When BIG_MODEL is set to a Gemini model, Claude Sonnet will map to `gemini/[model-name]`
+- When `USE_VERTEX_AUTH=true`, BIG_MODEL/SMALL_MODEL map to `vertex_ai/[model-name]`
 
 ### Customizing Model Mapping
 
-Control the mapping using environment variables in your `.env` file or directly:
+Set variables in `.env` (or export them). **`.env.example`** contains one universal template with commented presets; copy it to `.env` and uncomment the block you need:
 
-**Example 1: Default (Use OpenAI)**
-No changes needed in `.env` beyond API keys, or ensure:
-```dotenv
-OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key" # Needed if PREFERRED_PROVIDER=google
-# PREFERRED_PROVIDER="openai" # Optional, it's the default
-# BIG_MODEL="gpt-4.1" # Optional, it's the default
-# SMALL_MODEL="gpt-4.1-mini" # Optional, it's the default
-```
-
-**Example 2a: Prefer Google (using GEMINI_API_KEY)**
-```dotenv
-GEMINI_API_KEY="your-google-key"
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
-PREFERRED_PROVIDER="google"
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
-```
-
-**Example 2b: Prefer Google (using Vertex AI with Application Default Credentials)**
-```dotenv
-OPENAI_API_KEY="your-openai-key" # Needed for fallback
-PREFERRED_PROVIDER="google"
-VERTEX_PROJECT="your-gcp-project-id"
-VERTEX_LOCATION="us-central1"
-USE_VERTEX_AUTH=true
-# BIG_MODEL="gemini-2.5-pro" # Optional, it's the default for Google pref
-# SMALL_MODEL="gemini-2.5-flash" # Optional, it's the default for Google pref
-```
-
-**Example 3: Use Direct Anthropic ("Just an Anthropic Proxy" Mode)**
-```dotenv
-ANTHROPIC_API_KEY="sk-ant-..."
-PREFERRED_PROVIDER="anthropic"
-# BIG_MODEL and SMALL_MODEL are ignored in this mode
-# haiku/sonnet requests are passed directly to Anthropic models
-```
-
-*Use case: This mode enables you to use the proxy infrastructure (for logging, middleware, request/response processing, etc.) while still using actual Anthropic models rather than being forced to remap to OpenAI or Gemini.*
-
-**Example 4: Use Specific OpenAI Models**
-```dotenv
-OPENAI_API_KEY="your-openai-key"
-GEMINI_API_KEY="your-google-key"
-PREFERRED_PROVIDER="openai"
-BIG_MODEL="gpt-4o" # Example specific model
-SMALL_MODEL="gpt-4o-mini" # Example specific model
-```
+- **OpenAI (default)** — set `OPENAI_API_KEY`; optional `BIG_MODEL` / `SMALL_MODEL`.
+- **Google (Gemini API)** — `PREFERRED_PROVIDER=google`, `GEMINI_API_KEY`, optional `BIG_MODEL` / `SMALL_MODEL` (e.g. `gemini-2.5-pro`, `gemini-2.5-flash`).
+- **Google Vertex (Gemini)** — `PREFERRED_PROVIDER=google`, `USE_VERTEX_AUTH=true`, `VERTEX_PROJECT`, `VERTEX_LOCATION`; authenticate with gcloud (`gcloud auth application-default login`) or set `VERTEX_CREDENTIALS_PATH` to a service account key. Then set Gemini model IDs for `BIG_MODEL` / `SMALL_MODEL`.
+- **Google Vertex (Claude)** — same Vertex vars and auth (gcloud or key file); set `BIG_MODEL` / `SMALL_MODEL` to Claude Model Garden IDs (e.g. `claude-sonnet-4-5@20250929`, `claude-haiku-4-5@20251001`). See [Google Vertex AI setup](#google-vertex-ai-setup).
+- **Anthropic only** — `PREFERRED_PROVIDER=anthropic`, `ANTHROPIC_API_KEY`; `BIG_MODEL` / `SMALL_MODEL` are ignored; haiku/sonnet go straight to Anthropic.
 
 ## How It Works 🧩
 

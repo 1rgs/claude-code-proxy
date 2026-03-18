@@ -124,24 +124,39 @@ GEMINI_MODELS = [
 
 # Helper function to clean schema for Gemini
 def clean_gemini_schema(schema: Any) -> Any:
-    """Recursively removes unsupported fields from a JSON schema for Gemini."""
-    if isinstance(schema, dict):
-        # Remove specific keys unsupported by Gemini tool parameters
-        schema.pop("additionalProperties", None)
-        schema.pop("default", None)
+    """Recursively removes JSON Schema fields unsupported by Gemini API.
 
-        # Check for unsupported 'format' in string types
-        if schema.get("type") == "string" and "format" in schema:
-            allowed_formats = {"enum", "date-time"}
-            if schema["format"] not in allowed_formats:
-                logger.debug(f"Removing unsupported format '{schema['format']}' for string type in Gemini schema.")
-                schema.pop("format")
+    Gemini only supports a subset of JSON Schema: type, properties, required,
+    items, enum, description. All other fields cause 400 errors.
+
+    Reference: https://ai.google.dev/gemini-api/docs/function-calling
+    See also: https://github.com/weijiafu14/gemini-claude-bridge
+    """
+    if isinstance(schema, dict):
+        # Fields that Gemini API does not support
+        unsupported_keys = [
+            # Top-level extensions
+            "$schema", "additionalProperties",
+            # Validation constraints
+            "format", "minimum", "maximum", "minLength", "maxLength",
+            "minItems", "maxItems", "pattern", "exclusiveMinimum", "exclusiveMaximum",
+            # Metadata
+            "default", "examples", "const", "title",
+            # Composition (Gemini doesn't support these)
+            "oneOf", "anyOf", "allOf", "not",
+            # Other
+            "nullable", "$ref", "$id", "$comment",
+            # Object schema extensions
+            "propertyNames", "patternProperties", "unevaluatedProperties",
+            "dependentSchemas", "dependentRequired", "if", "then", "else",
+        ]
+        for key in unsupported_keys:
+            schema.pop(key, None)
 
         # Recursively clean nested schemas (properties, items, etc.)
-        for key, value in list(schema.items()): # Use list() to allow modification during iteration
+        for key, value in list(schema.items()):
             schema[key] = clean_gemini_schema(value)
     elif isinstance(schema, list):
-        # Recursively clean items in a list
         return [clean_gemini_schema(item) for item in schema]
     return schema
 

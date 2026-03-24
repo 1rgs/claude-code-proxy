@@ -112,14 +112,37 @@ OPENAI_MODELS = [
     "chatgpt-4o-latest",
     "gpt-4o-mini",
     "gpt-4o-mini-audio-preview",
-    "gpt-4.1",  # Added default big model
-    "gpt-4.1-mini" # Added default small model
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    # MeinGPT-available models
+    "gpt-5-4",
+    "gpt-5-3-chat",
+    "gpt-5-2",
+    "gpt-5-1",
+    "gpt-5",
+    "gpt-5-mini",
+    "o3",
+    "o3-pro",
+    "o4-mini",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4",
+    "claude-opus-4-5",
+    "deepseek-r1",
+    "deepseek-v3",
+    "llama-3.3-fast",
+    "mistral-medium",
+    "codestral",
 ]
 
 # List of Gemini models
 GEMINI_MODELS = [
     "gemini-2.5-flash",
-    "gemini-2.5-pro"
+    "gemini-2.5-pro",
+    # MeinGPT-available Gemini models
+    "gemini-3.1-pro",
+    "gemini-3-flash",
 ]
 
 # Helper function to clean schema for Gemini
@@ -218,6 +241,11 @@ class MessagesRequest(BaseModel):
         if PREFERRED_PROVIDER == "anthropic":
             # Don't remap to big/small models, just add the prefix
             new_model = f"anthropic/{clean_v}"
+            mapped = True
+
+        # Map Opus to itself (passthrough via MeinGPT)
+        elif 'opus' in clean_v.lower():
+            new_model = f"openai/claude-opus-4-6"
             mapped = True
 
         # Map Haiku to SMALL_MODEL based on provider preference

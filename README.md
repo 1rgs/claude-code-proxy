@@ -39,6 +39,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    ```
    Edit `.env` and fill in your API keys and model configurations:
 
+   *   `PROXY_API_KEY`: (Optional) When set, the proxy requires all API requests to include this key via `x-api-key` header or `Authorization: Bearer <key>`. **Strongly recommended when exposing the proxy publicly.** Leave empty to disable authentication (local use only).
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
    *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
@@ -95,6 +96,10 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 2. **Connect to your proxy**:
    ```bash
    ANTHROPIC_BASE_URL=http://localhost:8082 claude
+   ```
+   If you have `PROXY_API_KEY` set on the server, pass it as `ANTHROPIC_API_KEY` on the client side:
+   ```bash
+   ANTHROPIC_BASE_URL=http://your-server:8082 ANTHROPIC_API_KEY=your-proxy-api-key claude
    ```
 
 3. **That's it!** Your Claude Code client will now use the configured backend models (defaulting to Gemini) through the proxy. 🎯

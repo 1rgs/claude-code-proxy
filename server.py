@@ -77,6 +77,9 @@ for handler in logger.handlers:
 
 app = FastAPI()
 
+# Get proxy authentication key (required when set, protects the proxy from unauthorized access)
+PROXY_API_KEY = os.environ.get("PROXY_API_KEY")
+
 # Get API keys from environment
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
@@ -355,20 +358,29 @@ class MessagesResponse(BaseModel):
     usage: Usage
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
-    # Get request details
-    method = request.method
-    path = request.url.path
-    
-    # Log only basic request details at debug level
-    logger.debug(f"Request: {method} {path}")
-    
-    # Process the request and get the response
-    response = await call_next(request)
-    
-    return response
+async def auth_middleware(request: Request, call_next):
+    # Skip auth for health check endpoint
+    if request.url.path == "/":
+        return await call_next(request)
 
-# Not using validation function as we're using the environment API key
+    # If PROXY_API_KEY is set, enforce authentication
+    if PROXY_API_KEY:
+        # Check x-api-key header (Anthropic client style)
+        api_key = request.headers.get("x-api-key")
+        # Fallback: check Authorization: Bearer <key>
+        if not api_key:
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer "):
+                api_key = auth_header[7:]
+
+        if not api_key or api_key != PROXY_API_KEY:
+            return JSONResponse(
+                status_code=401,
+                content={"error": {"type": "authentication_error", "message": "Invalid or missing API key"}},
+            )
+
+    response = await call_next(request)
+    return response
 
 def parse_tool_result_content(content):
     """Helper function to properly parse and normalize tool result content."""

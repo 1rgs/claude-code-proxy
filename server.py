@@ -145,6 +145,80 @@ def clean_gemini_schema(schema: Any) -> Any:
         return [clean_gemini_schema(item) for item in schema]
     return schema
 
+# ---------- 模型映射核心逻辑（合并改进） ----------
+def apply_model_mapping(original_model: str, values: dict, is_token_count: bool = False) -> str:
+    """
+    根据环境变量和模型名称返回映射后的模型名（可能带 provider 前缀）。
+    同时将原始模型名存储到 values['original_model'] 中。
+    合并自 <new> 版本，但保留 <oringe> 中 PREFERRED_PROVIDER == "anthropic" 时添加前缀的行为。
+    """
+    logger.debug(f"📋 MODEL MAPPING: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
+    
+    # 存储原始模型名
+    if isinstance(values, dict):
+        values['original_model'] = original_model
+    
+    # 移除已有的 provider 前缀，获取纯模型名
+    clean_v = original_model
+    if clean_v.startswith('anthropic/'):
+        clean_v = clean_v[10:]
+    elif clean_v.startswith('openai/'):
+        clean_v = clean_v[7:]
+    elif clean_v.startswith('gemini/'):
+        clean_v = clean_v[7:]
+    
+    # 情况1：首选提供商是 anthropic → 强制转换为 anthropic/ 前缀，不进行大小模型映射
+    if PREFERRED_PROVIDER == "anthropic":
+        # 如果已经有 anthropic/ 前缀，直接返回原值；否则添加前缀
+        if original_model.startswith('anthropic/'):
+            new_model = original_model
+        else:
+            new_model = f"anthropic/{clean_v}"
+        log_type = "TOKEN COUNT MAPPING" if is_token_count else "MODEL MAPPING"
+        logger.debug(f"📌 {log_type}: '{original_model}' ➡️ '{new_model}' (forced anthropic)")
+        return new_model
+    
+    # 情况2：其他首选提供商（openai/google） → 应用映射规则
+    mapped = False
+    new_model = original_model  # 默认不变
+    
+    # 1. Haiku -> SMALL_MODEL
+    if 'haiku' in clean_v.lower():
+        if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
+            new_model = f"gemini/{SMALL_MODEL}"
+        else:
+            new_model = f"openai/{SMALL_MODEL}"
+        mapped = True
+    
+    # 2. Sonnet 或 Opus -> BIG_MODEL
+    elif any(keyword in clean_v.lower() for keyword in ['sonnet', 'opus']):
+        if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
+            new_model = f"gemini/{BIG_MODEL}"
+        else:
+            new_model = f"openai/{BIG_MODEL}"
+        mapped = True
+    
+    # 3. 已知的 Gemini/OpenAI 模型，直接加上对应的前缀
+    elif not mapped:
+        if clean_v in GEMINI_MODELS and not original_model.startswith('gemini/'):
+            new_model = f"gemini/{clean_v}"
+            mapped = True
+        elif clean_v in OPENAI_MODELS and not original_model.startswith('openai/'):
+            new_model = f"openai/{clean_v}"
+            mapped = True
+    
+    # 4. 如果仍未映射且无前缀，记录警告（保持原样）
+    if not mapped:
+        if not original_model.startswith(('openai/', 'gemini/', 'anthropic/')):
+            logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
+        new_model = original_model
+    
+    if mapped:
+        log_type = "TOKEN COUNT MAPPING" if is_token_count else "MODEL MAPPING"
+        logger.debug(f"📌 {log_type}: '{original_model}' ➡️ '{new_model}'")
+    
+    return new_model
+
 # Models for Anthropic API requests
 class ContentBlockText(BaseModel):
     type: Literal["text"]
@@ -198,69 +272,9 @@ class MessagesRequest(BaseModel):
     original_model: Optional[str] = None  # Will store the original model name
     
     @field_validator('model')
-    def validate_model_field(cls, v, info): # Renamed to avoid conflict
-        original_model = v
-        new_model = v # Default to original value
-
-        logger.debug(f"📋 MODEL VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
-
-        # Remove provider prefixes for easier matching
-        clean_v = v
-        if clean_v.startswith('anthropic/'):
-            clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
-            clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
-            clean_v = clean_v[7:]
-
-        # --- Mapping Logic --- START ---
-        mapped = False
-        if PREFERRED_PROVIDER == "anthropic":
-            # Don't remap to big/small models, just add the prefix
-            new_model = f"anthropic/{clean_v}"
-            mapped = True
-
-        # Map Haiku to SMALL_MODEL based on provider preference
-        elif 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{SMALL_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{SMALL_MODEL}"
-                mapped = True
-
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{BIG_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{BIG_MODEL}"
-                mapped = True
-
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-                new_model = f"gemini/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-                new_model = f"openai/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-        # --- Mapping Logic --- END ---
-
-        if mapped:
-            logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
-        else:
-             # If no mapping occurred and no prefix exists, log warning or decide default
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                 logger.warning(f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is.")
-             new_model = v # Ensure we return the original if no rule applied
-
-        # Store the original model in the values dictionary
+    def validate_model_field(cls, v, info):
         values = info.data
-        if isinstance(values, dict):
-            values['original_model'] = original_model
-
+        new_model = apply_model_mapping(v, values, is_token_count=False)
         return new_model
 
 class TokenCountRequest(BaseModel):
@@ -273,66 +287,9 @@ class TokenCountRequest(BaseModel):
     original_model: Optional[str] = None  # Will store the original model name
     
     @field_validator('model')
-    def validate_model_token_count(cls, v, info): # Renamed to avoid conflict
-        # Use the same logic as MessagesRequest validator
-        # NOTE: Pydantic validators might not share state easily if not class methods
-        # Re-implementing the logic here for clarity, could be refactored
-        original_model = v
-        new_model = v # Default to original value
-
-        logger.debug(f"📋 TOKEN COUNT VALIDATION: Original='{original_model}', Preferred='{PREFERRED_PROVIDER}', BIG='{BIG_MODEL}', SMALL='{SMALL_MODEL}'")
-
-        # Remove provider prefixes for easier matching
-        clean_v = v
-        if clean_v.startswith('anthropic/'):
-            clean_v = clean_v[10:]
-        elif clean_v.startswith('openai/'):
-            clean_v = clean_v[7:]
-        elif clean_v.startswith('gemini/'):
-            clean_v = clean_v[7:]
-
-        # --- Mapping Logic --- START ---
-        mapped = False
-        # Map Haiku to SMALL_MODEL based on provider preference
-        if 'haiku' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{SMALL_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{SMALL_MODEL}"
-                mapped = True
-
-        # Map Sonnet to BIG_MODEL based on provider preference
-        elif 'sonnet' in clean_v.lower():
-            if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
-                new_model = f"gemini/{BIG_MODEL}"
-                mapped = True
-            else:
-                new_model = f"openai/{BIG_MODEL}"
-                mapped = True
-
-        # Add prefixes to non-mapped models if they match known lists
-        elif not mapped:
-            if clean_v in GEMINI_MODELS and not v.startswith('gemini/'):
-                new_model = f"gemini/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-            elif clean_v in OPENAI_MODELS and not v.startswith('openai/'):
-                new_model = f"openai/{clean_v}"
-                mapped = True # Technically mapped to add prefix
-        # --- Mapping Logic --- END ---
-
-        if mapped:
-            logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
-        else:
-             if not v.startswith(('openai/', 'gemini/', 'anthropic/')):
-                 logger.warning(f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is.")
-             new_model = v # Ensure we return the original if no rule applied
-
-        # Store the original model in the values dictionary
+    def validate_model_token_count(cls, v, info):
         values = info.data
-        if isinstance(values, dict):
-            values['original_model'] = original_model
-
+        new_model = apply_model_mapping(v, values, is_token_count=True)
         return new_model
 
 class TokenCountResponse(BaseModel):

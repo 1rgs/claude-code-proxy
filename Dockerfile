@@ -1,16 +1,23 @@
-FROM python:latest
+FROM python:3.10-slim AS build
 
-WORKDIR /claude-code-proxy
+WORKDIR /app
+RUN pip install --no-cache-dir uv==0.4.30
 
-# Copy package specifications
+ENV UV_PYTHON_PREFERENCE=only-system \
+    UV_PYTHON_DOWNLOADS=never
+
 COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-install-project --no-dev
 
-# Install uv and project dependencies
-RUN pip install --upgrade uv && uv sync --locked
-
-# Copy project code to current directory
 COPY . .
+RUN uv sync --frozen --no-dev
 
-# Start the proxy
+
+FROM python:3.10-slim
+
+WORKDIR /app
+COPY --from=build /app /app
+ENV PATH=/app/.venv/bin:$PATH
+
 EXPOSE 8082
-CMD uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8082"]

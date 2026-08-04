@@ -170,7 +170,19 @@ TEST_SCENARIOS = {
             {"role": "user", "content": "Count from 1 to 5, with one number per line."}
         ]
     },
-    
+
+    # MiniMax via the Anthropic-compatible endpoint.
+    # Proxy-only test: there is no native Anthropic equivalent to compare
+    # against, so the harness validates the proxy response format directly.
+    "minimax": {
+        "model": "minimax/MiniMax-M3",
+        "max_tokens": 300,
+        "proxy_only": True,
+        "messages": [
+            {"role": "user", "content": "Hello! Can you tell me about Paris in 2-3 sentences?"}
+        ]
+    },
+
     # Tool use with streaming
     "calculator_stream": {
         "model": MODEL,
@@ -355,6 +367,54 @@ def test_request(test_name, request_data, check_tools=False):
             print(f"\n❌ Test {test_name} failed!")
             return False
     
+    except Exception as e:
+        print(f"\n❌ Error in test {test_name}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_proxy_only(test_name, request_data):
+    """Run a proxy-only test for models without a native Anthropic equivalent.
+
+    Some backends (e.g. MiniMax via its Anthropic-compatible endpoint) have no
+    corresponding model on the Anthropic API, so there is nothing to compare
+    against. For these scenarios the proxy response is validated directly.
+    """
+    print(f"\n{'='*20} RUNNING PROXY-ONLY TEST: {test_name} {'='*20}")
+
+    print(f"\nRequest data:\n{json.dumps({k: v for k, v in request_data.items() if k != 'messages'}, indent=2)}")
+
+    # Send only the request body to the proxy, dropping harness-only flags
+    data = request_data.copy()
+    data.pop("proxy_only", None)
+
+    try:
+        response = get_response(PROXY_API_URL, proxy_headers, data)
+
+        if response.status_code != 200:
+            print(f"\n❌ Proxy returned status {response.status_code}: {response.text}")
+            return False
+
+        proxy_json = response.json()
+
+        # Validate the Anthropic-format response structure
+        assert proxy_json.get("role") == "assistant", "Proxy role is not 'assistant'"
+        assert proxy_json.get("type") == "message", "Proxy type is not 'message'"
+        assert "content" in proxy_json and isinstance(proxy_json["content"], list), (
+            "Proxy content is not a list"
+        )
+        assert len(proxy_json["content"]) > 0, "Proxy content is empty"
+
+        # Require at least one non-empty text block
+        has_text = any(
+            item.get("type") == "text" and item.get("text")
+            for item in proxy_json["content"]
+        )
+        assert has_text, "Proxy response contains no text content"
+
+        print(f"\n✅ Test {test_name} passed!")
+        return True
+
     except Exception as e:
         print(f"\n❌ Error in test {test_name}: {str(e)}")
         import traceback
@@ -643,20 +703,37 @@ async def run_tests(args):
             # Skip streaming tests
             if test_data.get("stream"):
                 continue
-                
+
+            # Skip proxy-only tests (run separately below)
+            if test_data.get("proxy_only"):
+                continue
+
             # Skip tool tests if requested
             if args.simple and "tools" in test_data:
                 continue
-                
+
             # Skip non-tool tests if tools_only
             if args.tools_only and "tools" not in test_data:
                 continue
-                
+
             # Run the test
             check_tools = "tools" in test_data
             result = test_request(test_name, test_data, check_tools=check_tools)
             results[test_name] = result
-    
+
+    # Run proxy-only tests (models without a native Anthropic equivalent)
+    if not args.streaming_only:
+        print("\n\n=========== RUNNING PROXY-ONLY TESTS ===========\n")
+        for test_name, test_data in TEST_SCENARIOS.items():
+            if not test_data.get("proxy_only"):
+                continue
+
+            if args.tools_only and "tools" not in test_data:
+                continue
+
+            result = test_proxy_only(test_name, test_data)
+            results[test_name] = result
+
     # Now run streaming tests
     if not args.no_streaming:
         print("\n\n=========== RUNNING STREAMING TESTS ===========\n")

@@ -116,9 +116,12 @@ MINIMAX_API_STYLE = os.environ.get("MINIMAX_API_STYLE", "anthropic").lower()
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+DEFAULT_BIG_MODEL = "MiniMax-M3" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+DEFAULT_SMALL_MODEL = (
+    "MiniMax-M2.7" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini"
+)
+BIG_MODEL = os.environ.get("BIG_MODEL", DEFAULT_BIG_MODEL)
+SMALL_MODEL = os.environ.get("SMALL_MODEL", DEFAULT_SMALL_MODEL)
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -222,7 +225,9 @@ class Tool(BaseModel):
 
 
 class ThinkingConfig(BaseModel):
-    enabled: bool = True
+    type: Optional[str] = None
+    enabled: Optional[bool] = None
+    budget_tokens: Optional[int] = None
 
 
 class MessagesRequest(BaseModel):
@@ -706,7 +711,9 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         and MINIMAX_API_STYLE != "openai"
     )
     if anthropic_request.thinking and is_anthropic_route:
-        litellm_request["thinking"] = anthropic_request.thinking
+        litellm_request["thinking"] = anthropic_request.thinking.model_dump(
+            exclude_none=True
+        )
 
     # Add optional parameters if present
     if anthropic_request.stop_sequences:

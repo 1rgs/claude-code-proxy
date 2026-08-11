@@ -178,6 +178,8 @@ TEST_SCENARIOS = {
         "model": "minimax/MiniMax-M3",
         "max_tokens": 300,
         "proxy_only": True,
+        "requires_env": "MINIMAX_API_KEY",
+        "thinking": {"type": "adaptive"},
         "messages": [
             {"role": "user", "content": "Hello! Can you tell me about Paris in 2-3 sentences?"}
         ]
@@ -387,6 +389,7 @@ def test_proxy_only(test_name, request_data):
     # Send only the request body to the proxy, dropping harness-only flags
     data = request_data.copy()
     data.pop("proxy_only", None)
+    data.pop("requires_env", None)
 
     try:
         response = get_response(PROXY_API_URL, proxy_headers, data)
@@ -728,6 +731,11 @@ async def run_tests(args):
             if not test_data.get("proxy_only"):
                 continue
 
+            required_env = test_data.get("requires_env")
+            if required_env and not os.environ.get(required_env):
+                print(f"Skipping {test_name}: {required_env} is not set")
+                continue
+
             if args.tools_only and "tools" not in test_data:
                 continue
 
@@ -790,4 +798,4 @@ async def main():
     sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

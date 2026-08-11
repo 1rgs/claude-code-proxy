@@ -47,8 +47,8 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `minimax`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1`, or `MiniMax-M3` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini`, or `MiniMax-M2.7` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `MINIMAX_BASE_URL` (Optional): The MiniMax OpenAI-compatible endpoint. Defaults to `https://api.minimax.io/v1` (global); set to `https://api.minimaxi.com/v1` for the China region.
    *   `MINIMAX_ANTHROPIC_BASE_URL` (Optional): The MiniMax Anthropic-compatible endpoint. Defaults to `https://api.minimax.io/anthropic` (global); set to `https://api.minimaxi.com/anthropic` for the China region.
    *   `MINIMAX_API_STYLE` (Optional): Which MiniMax endpoint to route chat completions through. Defaults to `anthropic` (the Anthropic-compatible endpoint); set to `openai` to use the OpenAI-compatible endpoint.
@@ -106,12 +106,12 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 
 ## Model Mapping 🗺️
 
-The proxy automatically maps Claude models to either OpenAI or Gemini models based on the configured model:
+The proxy automatically maps Claude models to the configured provider:
 
-| Claude Model | Default Mapping | When BIG_MODEL/SMALL_MODEL is a Gemini model |
-|--------------|--------------|---------------------------|
-| haiku | openai/gpt-4o-mini | gemini/[model-name] |
-| sonnet | openai/gpt-4o | gemini/[model-name] |
+| Claude Model | OpenAI default | Google mapping | MiniMax default |
+|--------------|----------------|----------------|-----------------|
+| haiku | openai/gpt-4.1-mini | gemini/[model-name] | minimax/MiniMax-M2.7 |
+| sonnet | openai/gpt-4.1 | gemini/[model-name] | minimax/MiniMax-M3 |
 
 ### Supported Models
 
@@ -135,11 +135,17 @@ The following Gemini models are supported with automatic `gemini/` prefix handli
 - gemini-2.5-pro
 - gemini-2.5-flash
 
+#### MiniMax Models
+The following MiniMax models are supported with automatic `minimax/` prefix handling:
+- MiniMax-M3
+- MiniMax-M2.7
+
 ### Model Prefix Handling
 The proxy automatically adds the appropriate prefix to model names:
 - OpenAI models get the `openai/` prefix
 - Gemini models get the `gemini/` prefix
-- The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
+- MiniMax models get the `minimax/` prefix
+- The BIG_MODEL and SMALL_MODEL use the prefix for the configured provider
 
 For example:
 - `gpt-4o` becomes `openai/gpt-4o`
@@ -194,8 +200,8 @@ PREFERRED_PROVIDER="anthropic"
 ```dotenv
 MINIMAX_API_KEY="your-minimax-key"
 PREFERRED_PROVIDER="minimax"
-BIG_MODEL="MiniMax-M3"
-SMALL_MODEL="MiniMax-M2.7"
+# BIG_MODEL="MiniMax-M3" # Optional, it's the default for MiniMax pref
+# SMALL_MODEL="MiniMax-M2.7" # Optional, it's the default for MiniMax pref
 # MINIMAX_ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" # Optional, it's the default (global)
 # MINIMAX_BASE_URL="https://api.minimax.io/v1" # Optional, the OpenAI-compatible endpoint
 # MINIMAX_API_STYLE="anthropic" # Optional, it's the default; set to "openai" for the OpenAI-compatible endpoint

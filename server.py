@@ -89,6 +89,7 @@ app = FastAPI()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY")
 
 # Get Vertex AI project and location from environment (if set)
 VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", "unset")
@@ -100,13 +101,27 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Get MiniMax base URLs from environment (if set)
+# OpenAI-compatible endpoint (global); use https://api.minimaxi.com/v1 for the China region.
+MINIMAX_BASE_URL = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+# Anthropic-compatible endpoint (global); use https://api.minimaxi.com/anthropic for the China region.
+MINIMAX_ANTHROPIC_BASE_URL = os.environ.get(
+    "MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"
+)
+# Route MiniMax chat completions through the Anthropic-compatible endpoint by
+# default; set to "openai" to use the OpenAI-compatible endpoint instead.
+MINIMAX_API_STYLE = os.environ.get("MINIMAX_API_STYLE", "anthropic").lower()
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+DEFAULT_BIG_MODEL = "MiniMax-M3" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+DEFAULT_SMALL_MODEL = (
+    "MiniMax-M2.7" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini"
+)
+BIG_MODEL = os.environ.get("BIG_MODEL", DEFAULT_BIG_MODEL)
+SMALL_MODEL = os.environ.get("SMALL_MODEL", DEFAULT_SMALL_MODEL)
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -126,6 +141,9 @@ OPENAI_MODELS = [
 
 # List of Gemini models
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+# List of MiniMax models
+MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7"]
 
 
 # Helper function to clean schema for Gemini
@@ -207,7 +225,9 @@ class Tool(BaseModel):
 
 
 class ThinkingConfig(BaseModel):
-    enabled: bool = True
+    type: Optional[str] = None
+    enabled: Optional[bool] = None
+    budget_tokens: Optional[int] = None
 
 
 class MessagesRequest(BaseModel):
@@ -243,6 +263,8 @@ class MessagesRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
+        elif clean_v.startswith("minimax/"):
+            clean_v = clean_v[8:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -256,6 +278,9 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{SMALL_MODEL}"
+                mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
@@ -264,6 +289,9 @@ class MessagesRequest(BaseModel):
         elif "sonnet" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -274,6 +302,9 @@ class MessagesRequest(BaseModel):
             if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
+            elif clean_v in MINIMAX_MODELS and not v.startswith("minimax/"):
+                new_model = f"minimax/{clean_v}"
+                mapped = True  # Technically mapped to add prefix
             elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
@@ -283,7 +314,7 @@ class MessagesRequest(BaseModel):
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
             # If no mapping occurred and no prefix exists, log warning or decide default
-            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+            if not v.startswith(("openai/", "gemini/", "anthropic/", "minimax/")):
                 logger.warning(
                     f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is."
                 )
@@ -326,6 +357,8 @@ class TokenCountRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
+        elif clean_v.startswith("minimax/"):
+            clean_v = clean_v[8:]
 
         # --- Mapping Logic --- START ---
         mapped = False
@@ -333,6 +366,9 @@ class TokenCountRequest(BaseModel):
         if "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{SMALL_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -343,6 +379,9 @@ class TokenCountRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{BIG_MODEL}"
+                mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
@@ -352,6 +391,9 @@ class TokenCountRequest(BaseModel):
             if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
+            elif clean_v in MINIMAX_MODELS and not v.startswith("minimax/"):
+                new_model = f"minimax/{clean_v}"
+                mapped = True  # Technically mapped to add prefix
             elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
@@ -360,7 +402,7 @@ class TokenCountRequest(BaseModel):
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+            if not v.startswith(("openai/", "gemini/", "anthropic/", "minimax/")):
                 logger.warning(
                     f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is."
                 )
@@ -641,18 +683,37 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
             f"Capping max_tokens to 16384 for OpenAI/Gemini model (original value: {anthropic_request.max_tokens})"
         )
 
+    # MiniMax exposes both an Anthropic-compatible and an OpenAI-compatible
+    # endpoint. Route the model through the matching LiteLLM provider so the
+    # request format and api_base are selected consistently downstream.
+    litellm_model = anthropic_request.model
+    if litellm_model.startswith("minimax/"):
+        model_suffix = litellm_model[len("minimax/") :]
+        if MINIMAX_API_STYLE == "openai":
+            litellm_model = f"openai/{model_suffix}"
+        else:
+            litellm_model = f"anthropic/{model_suffix}"
+
     # Create LiteLLM request dict
     litellm_request = {
-        "model": anthropic_request.model,  # it understands "anthropic/claude-x" format
+        "model": litellm_model,  # it understands "anthropic/claude-x" format
         "messages": messages,
         "max_completion_tokens": max_tokens,
         "temperature": anthropic_request.temperature,
         "stream": anthropic_request.stream,
     }
 
-    # Only include thinking field for Anthropic models
-    if anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
-        litellm_request["thinking"] = anthropic_request.thinking
+    # Only include thinking field for Anthropic-compatible routes (native
+    # Anthropic models, and MiniMax models routed through the Anthropic-
+    # compatible endpoint).
+    is_anthropic_route = anthropic_request.model.startswith("anthropic/") or (
+        anthropic_request.model.startswith("minimax/")
+        and MINIMAX_API_STYLE != "openai"
+    )
+    if anthropic_request.thinking and is_anthropic_route:
+        litellm_request["thinking"] = anthropic_request.thinking.model_dump(
+            exclude_none=True
+        )
 
     # Add optional parameters if present
     if anthropic_request.stop_sequences:
@@ -740,6 +801,8 @@ def convert_litellm_to_anthropic(
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         # Check if this is a Claude model (which supports content blocks)
         is_claude_model = clean_model.startswith("claude-")
@@ -1232,6 +1295,8 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         logger.debug(
             f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}"
@@ -1251,6 +1316,18 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 )
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
+        elif request.model.startswith("minimax/"):
+            litellm_request["api_key"] = MINIMAX_API_KEY
+            if MINIMAX_API_STYLE == "openai":
+                litellm_request["api_base"] = MINIMAX_BASE_URL
+                logger.debug(
+                    f"Using MiniMax API key and OpenAI-compatible base URL {MINIMAX_BASE_URL} for model: {request.model}"
+                )
+            else:
+                litellm_request["api_base"] = MINIMAX_ANTHROPIC_BASE_URL
+                logger.debug(
+                    f"Using MiniMax API key and Anthropic-compatible base URL {MINIMAX_ANTHROPIC_BASE_URL} for model: {request.model}"
+                )
         elif request.model.startswith("gemini/"):
             if USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
@@ -1581,6 +1658,8 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(
@@ -1622,6 +1701,12 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
                 token_counter_args["api_base"] = OPENAI_BASE_URL
+            elif request.model.startswith("minimax/"):
+                token_counter_args["api_base"] = (
+                    MINIMAX_ANTHROPIC_BASE_URL
+                    if MINIMAX_API_STYLE != "openai"
+                    else MINIMAX_BASE_URL
+                )
 
             # Count tokens
             token_count = token_counter(**token_counter_args)

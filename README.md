@@ -42,17 +42,20 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
    *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `MINIMAX_API_KEY`: Your MiniMax API key (Required if `PREFERRED_PROVIDER=minimax`).
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `minimax`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`), `gemini-2.5-pro-preview-03-25`, or `MiniMax-M3` (if `PREFERRED_PROVIDER=minimax`). Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`), `gemini-2.0-flash`, or `MiniMax-M2.7` (if `PREFERRED_PROVIDER=minimax`). Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `MINIMAX_BASE_URL` (Optional): The base URL for the MiniMax OpenAI-compatible endpoint. Defaults to `https://api.minimax.io/v1` (global endpoint). Set to `https://api.minimaxi.com/v1` for the China region endpoint.
 
    **Mapping Logic:**
    - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
    - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
    - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
+   - If `PREFERRED_PROVIDER=minimax`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `minimax/`, and bare MiniMax models in the server's known `MINIMAX_MODELS` list are prefixed with `minimax/`. MiniMax requests use the MiniMax API key and the configured `MINIMAX_BASE_URL`.
 
 4. **Run the server**:
    ```bash

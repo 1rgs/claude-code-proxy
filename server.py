@@ -506,13 +506,21 @@ def convert_multimodal_content_blocks(content):
                 {"type": "text", "text": block.get("text", "")}
             )
         elif block_type in {"image", "video"}:
-            source_url = get_media_source_url(block.get("source", {}))
+            source = block.get("source", {})
+            source_url = get_media_source_url(source)
             if not source_url:
                 return None
 
             media_type = f"{block_type}_url"
+            media = {"url": source_url}
+            for option in ("detail", "max_long_side_pixel"):
+                if option in source:
+                    media[option] = source[option]
+            if block_type == "video" and "fps" in source:
+                media["fps"] = source["fps"]
+
             converted_content.append(
-                {"type": media_type, media_type: {"url": source_url}}
+                {"type": media_type, media_type: media}
             )
             has_media = True
         elif block_type == "tool_result":

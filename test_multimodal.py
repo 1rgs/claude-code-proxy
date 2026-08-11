@@ -38,6 +38,8 @@ class MultimodalContentTests(unittest.TestCase):
                         "type": "base64",
                         "media_type": "image/png",
                         "data": "aW1hZ2U=",
+                        "detail": "high",
+                        "max_long_side_pixel": 2048,
                     },
                 },
                 {
@@ -45,6 +47,9 @@ class MultimodalContentTests(unittest.TestCase):
                     "source": {
                         "type": "url",
                         "url": "https://example.com/sample.mp4",
+                        "detail": "low",
+                        "fps": 2,
+                        "max_long_side_pixel": 1080,
                     },
                 },
             ]
@@ -56,11 +61,20 @@ class MultimodalContentTests(unittest.TestCase):
                 {"type": "text", "text": "Compare these inputs."},
                 {
                     "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,aW1hZ2U="},
+                    "image_url": {
+                        "url": "data:image/png;base64,aW1hZ2U=",
+                        "detail": "high",
+                        "max_long_side_pixel": 2048,
+                    },
                 },
                 {
                     "type": "video_url",
-                    "video_url": {"url": "https://example.com/sample.mp4"},
+                    "video_url": {
+                        "url": "https://example.com/sample.mp4",
+                        "detail": "low",
+                        "fps": 2,
+                        "max_long_side_pixel": 1080,
+                    },
                 },
             ],
         )

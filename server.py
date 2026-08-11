@@ -111,9 +111,14 @@ MINIMAX_BASE_URL = os.environ.get(
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+# Use provider-specific defaults when model overrides are not set
+BIG_MODEL = os.environ.get(
+    "BIG_MODEL", "MiniMax-M3" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+)
+SMALL_MODEL = os.environ.get(
+    "SMALL_MODEL",
+    "MiniMax-M2.7" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini",
+)
 
 # List of OpenAI models
 OPENAI_MODELS = [

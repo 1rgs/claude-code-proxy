@@ -47,8 +47,8 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `minimax`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`), `gemini-2.5-pro-preview-03-25`, or `MiniMax-M3` (if `PREFERRED_PROVIDER=minimax`). Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`), `gemini-2.0-flash`, or `MiniMax-M2.7` (if `PREFERRED_PROVIDER=minimax`). Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `MINIMAX_BASE_URL` (Optional): The base URL for the MiniMax OpenAI-compatible endpoint. Defaults to `https://api.minimax.io/v1` (global endpoint). Set to `https://api.minimaxi.com/v1` for the China region endpoint.
 
    **Mapping Logic:**

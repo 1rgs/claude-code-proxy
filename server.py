@@ -167,6 +167,11 @@ class ContentBlockImage(BaseModel):
     source: Dict[str, Any]
 
 
+class ContentBlockVideo(BaseModel):
+    type: Literal["video"]
+    source: Dict[str, Any]
+
+
 class ContentBlockToolUse(BaseModel):
     type: Literal["tool_use"]
     id: str
@@ -193,6 +198,7 @@ class Message(BaseModel):
             Union[
                 ContentBlockText,
                 ContentBlockImage,
+                ContentBlockVideo,
                 ContentBlockToolUse,
                 ContentBlockToolResult,
             ]
@@ -461,6 +467,113 @@ def parse_tool_result_content(content):
         return "Unparseable content"
 
 
+def get_media_source_url(source: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(source, dict):
+        return None
+
+    url = source.get("url")
+    if isinstance(url, str) and url:
+        return url
+
+    if source.get("type") == "base64":
+        media_type = source.get("media_type")
+        data = source.get("data")
+        if (
+            isinstance(media_type, str)
+            and media_type
+            and isinstance(data, str)
+            and data
+        ):
+            return f"data:{media_type};base64,{data}"
+
+    return None
+
+
+def convert_multimodal_content_blocks(content):
+    if not isinstance(content, list):
+        return None
+
+    converted_content = []
+    has_media = False
+
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+        if block_type == "text":
+            converted_content.append(
+                {"type": "text", "text": block.get("text", "")}
+            )
+        elif block_type in {"image", "video"}:
+            source = block.get("source", {})
+            source_url = get_media_source_url(source)
+            if not source_url:
+                return None
+
+            media_type = f"{block_type}_url"
+            media = {"url": source_url}
+            for option in ("detail", "max_long_side_pixel"):
+                if option in source:
+                    media[option] = source[option]
+            if block_type == "video" and "fps" in source:
+                media["fps"] = source["fps"]
+
+            converted_content.append(
+                {"type": media_type, media_type: media}
+            )
+            has_media = True
+        elif block_type == "tool_result":
+            tool_id = block.get("tool_use_id", "unknown")
+            result_content = parse_tool_result_content(block.get("content"))
+            converted_content.append(
+                {
+                    "type": "text",
+                    "text": f"[Tool Result ID: {tool_id}]\n{result_content}",
+                }
+            )
+        elif block_type == "tool_use":
+            tool_name = block.get("name", "unknown")
+            tool_id = block.get("id", "unknown")
+            tool_input = json.dumps(block.get("input", {}))
+            converted_content.append(
+                {
+                    "type": "text",
+                    "text": f"[Tool: {tool_name} (ID: {tool_id})]\nInput: {tool_input}",
+                }
+            )
+
+    return converted_content if has_media else None
+
+
+def is_supported_multimodal_content(content):
+    if not isinstance(content, list) or not content:
+        return False
+
+    has_media = False
+    for block in content:
+        if not isinstance(block, dict):
+            return False
+
+        block_type = block.get("type")
+        if block_type == "text":
+            if not isinstance(block.get("text"), str):
+                return False
+        elif block_type in {"image_url", "video_url"}:
+            media = block.get(block_type)
+            if (
+                not isinstance(media, dict)
+                or not isinstance(media.get("url"), str)
+                or not media.get("url")
+            ):
+                return False
+            has_media = True
+        else:
+            return False
+
+    return has_media
+
+
 def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str, Any]:
     """Convert Anthropic API request format to LiteLLM format (which follows OpenAI)."""
     # LiteLLM already handles Anthropic models when using the format model="anthropic/claude-3-opus-20240229"
@@ -586,6 +699,10 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
                         elif block.type == "image":
                             processed_content.append(
                                 {"type": "image", "source": block.source}
+                            )
+                        elif block.type == "video":
+                            processed_content.append(
+                                {"type": "video", "source": block.source}
                             )
                         elif block.type == "tool_use":
                             # Handle tool use blocks if needed
@@ -1276,6 +1393,22 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 # Special case - handle message content directly when it's a list of tool_result
                 # This is a specific case we're seeing in the error
                 if "content" in msg and isinstance(msg["content"], list):
+                    multimodal_content = convert_multimodal_content_blocks(
+                        msg["content"]
+                    )
+                    if multimodal_content is not None:
+                        litellm_request["messages"][i]["content"] = multimodal_content
+                        for key in list(msg.keys()):
+                            if key not in [
+                                "role",
+                                "content",
+                                "name",
+                                "tool_call_id",
+                                "tool_calls",
+                            ]:
+                                del msg[key]
+                        continue
+
                     is_only_tool_result = True
                     for block in msg["content"]:
                         if (
@@ -1402,9 +1535,10 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                                     tool_input = json.dumps(block.get("input", {}))
                                     text_content += f"[Tool: {tool_name} (ID: {tool_id})]\nInput: {tool_input}\n\n"
 
-                                # Handle image content blocks
-                                elif block.get("type") == "image":
-                                    text_content += "[Image content - not displayed in text format]\n"
+                                # Handle media content blocks that could not be forwarded
+                                elif block.get("type") in {"image", "video"}:
+                                    content_type = block.get("type", "media").capitalize()
+                                    text_content += f"[{content_type} content - not displayed in text format]\n"
 
                         # Make sure content is never empty for OpenAI models
                         if not text_content.strip():
@@ -1438,8 +1572,11 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                     f"Message {i} format check - role: {msg.get('role')}, content type: {type(msg.get('content'))}"
                 )
 
-                # If content is still a list or None, replace with placeholder
-                if isinstance(msg.get("content"), list):
+                # If content is still an unsupported list or None, replace with placeholder
+                if (
+                    isinstance(msg.get("content"), list)
+                    and not is_supported_multimodal_content(msg.get("content"))
+                ):
                     logger.warning(
                         f"CRITICAL: Message {i} still has list content after processing: {json.dumps(msg.get('content'))}"
                     )

@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import litellm
 import uuid
 import time
@@ -99,6 +99,12 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
+
+# MiniMax synchronous speech synthesis configuration
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY")
+MINIMAX_SPEECH_URL = os.environ.get(
+    "MINIMAX_SPEECH_URL", "https://api.minimax.io/v1/t2a_v2"
+)
 
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
@@ -396,6 +402,91 @@ class MessagesResponse(BaseModel):
     ] = None
     stop_sequence: Optional[str] = None
     usage: Usage
+
+
+class SpeechRequest(BaseModel):
+    model: Literal[
+        "speech-2.8-hd",
+        "speech-2.8-turbo",
+        "speech-2.6-hd",
+        "speech-2.6-turbo",
+        "speech-02-hd",
+        "speech-02-turbo",
+        "speech-01-hd",
+        "speech-01-turbo",
+    ] = "speech-2.8-hd"
+    text: str = Field(min_length=1, max_length=10000)
+    stream: bool = False
+    language_boost: Optional[str] = None
+    output_format: Literal["hex", "url"] = "hex"
+    voice_setting: Optional[Dict[str, Any]] = None
+    pronunciation_dict: Optional[Dict[str, Any]] = None
+    audio_setting: Optional[Dict[str, Any]] = None
+    voice_modify: Optional[Dict[str, Any]] = None
+    subtitle_enable: Optional[bool] = None
+
+
+SPEECH_MEDIA_TYPES = {
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "pcm": "application/octet-stream",
+}
+
+
+def speech_media_type(request: SpeechRequest) -> str:
+    audio_format = (request.audio_setting or {}).get("format", "mp3")
+    return SPEECH_MEDIA_TYPES.get(audio_format, "application/octet-stream")
+
+
+def check_speech_response(payload: Dict[str, Any], require_complete: bool) -> str:
+    base_response = payload.get("base_resp") or {}
+    if base_response.get("status_code") != 0:
+        message = base_response.get("status_msg") or "Speech synthesis failed"
+        raise HTTPException(status_code=502, detail=message)
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="Speech response has no data")
+    if require_complete and data.get("status") != 2:
+        raise HTTPException(status_code=502, detail="Speech synthesis did not complete")
+
+    audio = data.get("audio")
+    if not isinstance(audio, str) or not audio:
+        raise HTTPException(status_code=502, detail="Speech response has no audio")
+    return audio
+
+
+async def stream_speech_audio(payload: Dict[str, Any]):
+    headers = {"Authorization": f"Bearer {MINIMAX_API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST", MINIMAX_SPEECH_URL, headers=headers, json=payload
+            ) as response:
+                if response.status_code >= 400:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Speech service returned HTTP {response.status_code}",
+                    )
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line)
+                        audio = check_speech_response(chunk, require_complete=False)
+                        yield bytes.fromhex(audio)
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=502, detail="Speech stream contained invalid audio"
+                        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Speech service request failed") from exc
 
 
 @app.middleware("http")
@@ -1640,6 +1731,50 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
         error_traceback = traceback.format_exc()
         logger.error(f"Error counting tokens: {str(e)}\n{error_traceback}")
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
+
+
+@app.post("/v1/audio/speech")
+async def create_speech(request: SpeechRequest):
+    if not MINIMAX_API_KEY:
+        raise HTTPException(status_code=500, detail="MINIMAX_API_KEY is not configured")
+    if request.stream and request.output_format != "hex":
+        raise HTTPException(
+            status_code=400, detail="Streaming speech requires hex output"
+        )
+
+    payload = request.model_dump(exclude_none=True)
+    if request.stream:
+        return StreamingResponse(
+            stream_speech_audio(payload), media_type=speech_media_type(request)
+        )
+
+    headers = {"Authorization": f"Bearer {MINIMAX_API_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(
+                MINIMAX_SPEECH_URL, headers=headers, json=payload
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Speech service request failed") from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Speech service returned HTTP {response.status_code}",
+        )
+    try:
+        response_payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Speech service returned invalid JSON") from exc
+
+    audio = check_speech_response(response_payload, require_complete=True)
+    if request.output_format == "url":
+        return JSONResponse(content=response_payload)
+    try:
+        audio_bytes = bytes.fromhex(audio)
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Speech response has invalid audio") from exc
+    return Response(content=audio_bytes, media_type=speech_media_type(request))
 
 
 @app.get("/")

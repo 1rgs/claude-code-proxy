@@ -42,6 +42,8 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
    *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `MINIMAX_API_KEY`: Your MiniMax API key (Required for speech synthesis).
+   *   `MINIMAX_SPEECH_URL` (Optional): The MiniMax speech endpoint. It defaults to `https://api.minimax.io/v1/t2a_v2`; use `https://api.minimaxi.com/v1/t2a_v2` for the China region.
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
@@ -59,6 +61,17 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    uv run uvicorn server:app --host 0.0.0.0 --port 8082 --reload
    ```
    *(`--reload` is optional, for development)*
+
+### Speech synthesis
+
+`POST /v1/audio/speech` accepts MiniMax speech models and forwards the supported HTTP speech fields. Hex responses are decoded into audio bytes; URL responses remain JSON. Set `stream` to `true` to receive decoded audio chunks.
+
+```bash
+curl http://localhost:8082/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"speech-2.8-hd","text":"Hello","voice_setting":{"voice_id":"English_expressive_narrator"},"audio_setting":{"format":"mp3"}}' \
+  --output speech.mp3
+```
 
 #### Docker
 

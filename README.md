@@ -1,8 +1,8 @@
-# Anthropic API Proxy for Gemini & OpenAI Models 🔄
+# Anthropic API Proxy for Gemini, OpenAI & OrcaRouter Models 🔄
 
-**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, or direct Anthropic backends.** 🤝
+**Use Anthropic clients (like Claude Code) with Gemini, OpenAI, OrcaRouter, or direct Anthropic backends.** 🤝
 
-A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM. 🌉
+A proxy server that lets you use Anthropic clients with Gemini, OpenAI, OrcaRouter, or Anthropic models themselves (a transparent proxy of sorts), all via LiteLLM. 🌉
 
 
 ![Anthropic API Proxy](pic.png)
@@ -13,6 +13,7 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
 
 - OpenAI API key 🔑
 - Google AI Studio (Gemini) API key (if using Google provider) 🔑
+- OrcaRouter API key (if using OrcaRouter provider) 🔑
 - Google Cloud Project with Vertex AI API enabled (if using Application Default Credentials for Gemini) ☁️
 - [uv](https://github.com/astral-sh/uv) installed.
 
@@ -42,16 +43,19 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
    *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `ORCAROUTER_API_KEY`: Your [OrcaRouter](https://www.orcarouter.ai) API key (Required if `PREFERRED_PROVIDER=orcarouter`).
+   *   `ORCAROUTER_BASE_URL` (Optional): OrcaRouter's OpenAI-compatible endpoint. Defaults to `https://api.orcarouter.ai/v1`.
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `orcarouter`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`), `gemini-2.5-pro-preview-03-25` (if `PREFERRED_PROVIDER=google`), or `anthropic/claude-sonnet-4.6` (if `PREFERRED_PROVIDER=orcarouter`). Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`), `gemini-2.0-flash` (if `PREFERRED_PROVIDER=google`), or `anthropic/claude-haiku-4.5` (if `PREFERRED_PROVIDER=orcarouter`). Ignored when `PREFERRED_PROVIDER=anthropic`.
 
    **Mapping Logic:**
    - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
    - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
+   - If `PREFERRED_PROVIDER=orcarouter`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/` (OrcaRouter speaks the OpenAI wire format) and are routed through [OrcaRouter](https://www.orcarouter.ai) using `ORCAROUTER_API_KEY` + `ORCAROUTER_BASE_URL`.
    - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
 
 4. **Run the server**:
@@ -194,13 +198,24 @@ BIG_MODEL="gpt-4o" # Example specific model
 SMALL_MODEL="gpt-4o-mini" # Example specific model
 ```
 
+**Example 5: Prefer [OrcaRouter](https://www.orcarouter.ai)**
+```dotenv
+ORCAROUTER_API_KEY="sk-orca-..."
+PREFERRED_PROVIDER="orcarouter"
+# ORCAROUTER_BASE_URL="https://api.orcarouter.ai/v1" # Optional, it's the default
+# BIG_MODEL="anthropic/claude-sonnet-4.6" # Optional, it's the default for OrcaRouter pref
+# SMALL_MODEL="anthropic/claude-haiku-4.5" # Optional, it's the default for OrcaRouter pref
+```
+
+*Use case: [OrcaRouter](https://www.orcarouter.ai) is an OpenAI-compatible LLM router with one API key for 150+ models (Anthropic, OpenAI, Google, DeepSeek, and more). Set `BIG_MODEL`/`SMALL_MODEL` to any model id from its catalog — e.g. `anthropic/claude-sonnet-4.6`, `openai/gpt-4o`, `google/gemini-2.5-flash`, or the smart `orcarouter/auto` router. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.*
+
 ## How It Works 🧩
 
 This proxy works by:
 
 1. **Receiving requests** in Anthropic's API format 📥
 2. **Translating** the requests to OpenAI format via LiteLLM 🔄
-3. **Sending** the translated request to OpenAI 📤
+3. **Sending** the translated request to the configured backend (OpenAI, Gemini, OrcaRouter, or Anthropic) 📤
 4. **Converting** the response back to Anthropic format 🔄
 5. **Returning** the formatted response to the client ✅
 

@@ -100,13 +100,23 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Get OrcaRouter API key and base URL from environment (if set)
+ORCAROUTER_API_KEY = os.environ.get("ORCAROUTER_API_KEY")
+ORCAROUTER_BASE_URL = os.environ.get(
+    "ORCAROUTER_BASE_URL", "https://api.orcarouter.ai/v1"
+)
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
 # Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+if PREFERRED_PROVIDER == "orcarouter":
+    BIG_MODEL = os.environ.get("BIG_MODEL", "anthropic/claude-sonnet-4.6")
+    SMALL_MODEL = os.environ.get("SMALL_MODEL", "anthropic/claude-haiku-4.5")
+else:
+    BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
+    SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -631,11 +641,13 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
 
                 messages.append({"role": msg.role, "content": processed_content})
 
-    # Cap max_tokens for OpenAI models to their limit of 16384
+    # Cap max_tokens for OpenAI models to their limit of 16384.
+    # Skip for OrcaRouter: it routes to Claude models with larger output limits.
     max_tokens = anthropic_request.max_tokens
-    if anthropic_request.model.startswith(
-        "openai/"
-    ) or anthropic_request.model.startswith("gemini/"):
+    if (
+        anthropic_request.model.startswith("openai/")
+        or anthropic_request.model.startswith("gemini/")
+    ) and PREFERRED_PROVIDER != "orcarouter":
         max_tokens = min(max_tokens, 16384)
         logger.debug(
             f"Capping max_tokens to 16384 for OpenAI/Gemini model (original value: {anthropic_request.max_tokens})"
@@ -1242,15 +1254,22 @@ async def create_message(request: MessagesRequest, raw_request: Request):
 
         # Determine which API key to use based on the model
         if request.model.startswith("openai/"):
-            litellm_request["api_key"] = OPENAI_API_KEY
-            # Use custom OpenAI base URL if configured
-            if OPENAI_BASE_URL:
-                litellm_request["api_base"] = OPENAI_BASE_URL
+            if PREFERRED_PROVIDER == "orcarouter":
+                litellm_request["api_key"] = ORCAROUTER_API_KEY
+                litellm_request["api_base"] = ORCAROUTER_BASE_URL
                 logger.debug(
-                    f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}"
+                    f"Using OrcaRouter API key and base URL {ORCAROUTER_BASE_URL} for model: {request.model}"
                 )
             else:
-                logger.debug(f"Using OpenAI API key for model: {request.model}")
+                litellm_request["api_key"] = OPENAI_API_KEY
+                # Use custom OpenAI base URL if configured
+                if OPENAI_BASE_URL:
+                    litellm_request["api_base"] = OPENAI_BASE_URL
+                    logger.debug(
+                        f"Using OpenAI API key and custom base URL {OPENAI_BASE_URL} for model: {request.model}"
+                    )
+                else:
+                    logger.debug(f"Using OpenAI API key for model: {request.model}")
         elif request.model.startswith("gemini/"):
             if USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
@@ -1620,8 +1639,11 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             }
 
             # Add custom base URL for OpenAI models if configured
-            if request.model.startswith("openai/") and OPENAI_BASE_URL:
-                token_counter_args["api_base"] = OPENAI_BASE_URL
+            if request.model.startswith("openai/"):
+                if PREFERRED_PROVIDER == "orcarouter":
+                    token_counter_args["api_base"] = ORCAROUTER_BASE_URL
+                elif OPENAI_BASE_URL:
+                    token_counter_args["api_base"] = OPENAI_BASE_URL
 
             # Count tokens
             token_count = token_counter(**token_counter_args)

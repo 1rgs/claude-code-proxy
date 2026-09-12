@@ -100,6 +100,11 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Get Azure OpenAI settings from environment (if set)
+AZURE_API_KEY = os.environ.get("AZURE_API_KEY")
+AZURE_API_BASE = os.environ.get("AZURE_API_BASE")
+AZURE_API_VERSION = os.environ.get("AZURE_API_VERSION", "2024-08-01-preview")
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
@@ -256,6 +261,9 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
+            elif AZURE_API_BASE:  # ← 追加: Azure設定があればazureプレフィックスを使う
+                new_model = f"azure/{SMALL_MODEL}"
+                mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
                 mapped = True
@@ -264,6 +272,9 @@ class MessagesRequest(BaseModel):
         elif "sonnet" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
+                mapped = True
+            elif AZURE_API_BASE:  # ← 追加
+                new_model = f"azure/{BIG_MODEL}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -1241,7 +1252,14 @@ async def create_message(request: MessagesRequest, raw_request: Request):
         litellm_request = convert_anthropic_to_litellm(request)
 
         # Determine which API key to use based on the model
-        if request.model.startswith("openai/"):
+        if request.model.startswith("azure/"):  # ← 追加
+            litellm_request["api_key"] = AZURE_API_KEY
+            litellm_request["api_base"] = AZURE_API_BASE
+            litellm_request["api_version"] = AZURE_API_VERSION
+            logger.debug(
+                f"Using Azure API key/base/version for model: {request.model}"
+            )
+        elif request.model.startswith("openai/"):
             litellm_request["api_key"] = OPENAI_API_KEY
             # Use custom OpenAI base URL if configured
             if OPENAI_BASE_URL:
@@ -1620,7 +1638,10 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             }
 
             # Add custom base URL for OpenAI models if configured
-            if request.model.startswith("openai/") and OPENAI_BASE_URL:
+            if request.model.startswith("azure/"):
+                token_counter_args["api_base"] = AZURE_API_BASE
+                token_counter_args["api_version"] = AZURE_API_VERSION
+            elif request.model.startswith("openai/") and OPENAI_BASE_URL:
                 token_counter_args["api_base"] = OPENAI_BASE_URL
 
             # Count tokens

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+import asyncio
 import uvicorn
 import logging
 import json
@@ -6,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 import litellm
 import uuid
 import time
@@ -398,19 +399,32 @@ class MessagesResponse(BaseModel):
     usage: Usage
 
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    # Get request details
-    method = request.method
-    path = request.url.path
+# Don't add an @app.middleware("http") here: Starlette's BaseHTTPMiddleware
+# hides client disconnects from endpoints, which cancel_on_disconnect needs.
 
-    # Log only basic request details at debug level
-    logger.debug(f"Request: {method} {path}")
 
-    # Process the request and get the response
-    response = await call_next(request)
+class ClientDisconnected(Exception):
+    """The client went away before the upstream model answered."""
 
-    return response
+
+async def cancel_on_disconnect(awaitable, raw_request: Request, poll_interval: float = 0.5):
+    """Await an upstream call, cancelling it if the client disconnects first.
+
+    An upstream model reading a long prompt can stay silent for minutes, and
+    until it answers nothing else notices the client has gone, so the upstream
+    request (and the compute behind it) would run on for nobody."""
+    task = asyncio.ensure_future(awaitable)
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=poll_interval)
+            if done:
+                return task.result()
+            if await raw_request.is_disconnected():
+                logger.warning("Client disconnected; cancelled upstream request")
+                raise ClientDisconnected()
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 # Not using validation function as we're using the environment API key
@@ -1475,7 +1489,9 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 200,  # Assuming success at this point
             )
             # Ensure we use the async version for streaming
-            response_generator = await litellm.acompletion(**litellm_request)
+            response_generator = await cancel_on_disconnect(
+                litellm.acompletion(**litellm_request), raw_request
+            )
 
             return StreamingResponse(
                 handle_streaming(response_generator, request),
@@ -1495,7 +1511,9 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 200,  # Assuming success at this point
             )
             start_time = time.time()
-            litellm_response = litellm.completion(**litellm_request)
+            litellm_response = await cancel_on_disconnect(
+                litellm.acompletion(**litellm_request), raw_request
+            )
             logger.debug(
                 f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s"
             )
@@ -1505,6 +1523,8 @@ async def create_message(request: MessagesRequest, raw_request: Request):
 
             return anthropic_response
 
+    except ClientDisconnected:
+        return Response(status_code=499)
     except Exception as e:
         import traceback
 

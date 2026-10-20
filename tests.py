@@ -175,8 +175,9 @@ TEST_SCENARIOS = {
     # Proxy-only test: there is no native Anthropic equivalent to compare
     # against, so the harness validates the proxy response format directly.
     "minimax": {
-        "model": "minimax/MiniMax-M3",
-        "max_tokens": 300,
+        "model": "minimax/MiniMax-M3.1-Flash",
+        "output_config": {"effort": "low"},
+        "max_tokens": 4096,
         "proxy_only": True,
         "requires_env": "MINIMAX_API_KEY",
         "thinking": {"type": "adaptive"},

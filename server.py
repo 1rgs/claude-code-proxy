@@ -2,12 +2,14 @@ from fastapi import FastAPI, Request, HTTPException
 import uvicorn
 import logging
 import json
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
 from fastapi.responses import JSONResponse, StreamingResponse
 import litellm
+from litellm.llms.custom_httpx.http_handler import HTTPHandler, AsyncHTTPHandler
+from starlette.background import BackgroundTask
 import uuid
 import time
 from dotenv import load_dotenv
@@ -116,9 +118,11 @@ MINIMAX_API_STYLE = os.environ.get("MINIMAX_API_STYLE", "anthropic").lower()
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
-DEFAULT_BIG_MODEL = "MiniMax-M3" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+DEFAULT_BIG_MODEL = (
+    "MiniMax-M3.1-Flash" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+)
 DEFAULT_SMALL_MODEL = (
-    "MiniMax-M2.7" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini"
+    "MiniMax-M3.1-Flash" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini"
 )
 BIG_MODEL = os.environ.get("BIG_MODEL", DEFAULT_BIG_MODEL)
 SMALL_MODEL = os.environ.get("SMALL_MODEL", DEFAULT_SMALL_MODEL)
@@ -142,8 +146,25 @@ OPENAI_MODELS = [
 # List of Gemini models
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
 
-# List of MiniMax models
-MINIMAX_MODELS = ["MiniMax-M3", "MiniMax-M2.7"]
+# Current MiniMax models; explicit legacy/custom IDs remain valid requests.
+MINIMAX_MODELS = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+
+
+def minimax_anthropic_body(data):
+    """Flatten provider options after LiteLLM's Claude-specific validation."""
+    body = json.loads(data)
+    body.update(body.pop("extra_body", {}))
+    return json.dumps(body)
+
+
+class MiniMaxHTTPHandler(HTTPHandler):
+    def post(self, url, *, data, **kwargs):
+        return super().post(url, data=minimax_anthropic_body(data), **kwargs)
+
+
+class MiniMaxAsyncHTTPHandler(AsyncHTTPHandler):
+    async def post(self, url, *, data, **kwargs):
+        return await super().post(url, data=minimax_anthropic_body(data), **kwargs)
 
 
 # Helper function to clean schema for Gemini
@@ -244,7 +265,28 @@ class MessagesRequest(BaseModel):
     tools: Optional[List[Tool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     thinking: Optional[ThinkingConfig] = None
+    output_config: Optional[Dict[str, Any]] = None
+    reasoning_effort: Optional[str] = None
     original_model: Optional[str] = None  # Will store the original model name
+
+    @model_validator(mode="after")
+    def validate_minimax_options(self):
+        if self.model == "minimax/MiniMax-M3.1-Flash":
+            if self.thinking and (
+                self.thinking.type not in (None, "adaptive", "enabled")
+                or self.thinking.enabled is False
+            ):
+                raise ValueError("MiniMax-M3.1-Flash requires adaptive thinking")
+            efforts = [self.reasoning_effort, (self.output_config or {}).get("effort")]
+            if any(
+                effort is not None
+                and effort not in ("low", "medium", "high", "xhigh", "max")
+                for effort in efforts
+            ):
+                raise ValueError(
+                    "MiniMax-M3.1-Flash effort must be low, medium, high, xhigh or max"
+                )
+        return self
 
     @field_validator("model")
     def validate_model_field(cls, v, info):  # Renamed to avoid conflict
@@ -268,7 +310,11 @@ class MessagesRequest(BaseModel):
 
         # --- Mapping Logic --- START ---
         mapped = False
-        if PREFERRED_PROVIDER == "anthropic":
+        if v.startswith("minimax/") or v.startswith("MiniMax-"):
+            # Explicit MiniMax IDs must not be remapped, including saved/custom IDs.
+            new_model = v if v.startswith("minimax/") else f"minimax/{v}"
+            mapped = True
+        elif PREFERRED_PROVIDER == "anthropic":
             # Don't remap to big/small models, just add the prefix
             new_model = f"anthropic/{clean_v}"
             mapped = True
@@ -279,7 +325,7 @@ class MessagesRequest(BaseModel):
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             elif PREFERRED_PROVIDER == "minimax":
-                new_model = f"minimax/{SMALL_MODEL}"
+                new_model = f"minimax/{SMALL_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -291,7 +337,7 @@ class MessagesRequest(BaseModel):
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             elif PREFERRED_PROVIDER == "minimax":
-                new_model = f"minimax/{BIG_MODEL}"
+                new_model = f"minimax/{BIG_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -362,13 +408,17 @@ class TokenCountRequest(BaseModel):
 
         # --- Mapping Logic --- START ---
         mapped = False
+        if v.startswith("minimax/") or v.startswith("MiniMax-"):
+            # Keep token-count routing consistent with explicit message requests.
+            new_model = v if v.startswith("minimax/") else f"minimax/{v}"
+            mapped = True
         # Map Haiku to SMALL_MODEL based on provider preference
-        if "haiku" in clean_v.lower():
+        elif "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
                 mapped = True
             elif PREFERRED_PROVIDER == "minimax":
-                new_model = f"minimax/{SMALL_MODEL}"
+                new_model = f"minimax/{SMALL_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -380,7 +430,7 @@ class TokenCountRequest(BaseModel):
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
             elif PREFERRED_PROVIDER == "minimax":
-                new_model = f"minimax/{BIG_MODEL}"
+                new_model = f"minimax/{BIG_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
@@ -703,14 +753,25 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         "stream": anthropic_request.stream,
     }
 
-    # Only include thinking field for Anthropic-compatible routes (native
-    # Anthropic models, and MiniMax models routed through the Anthropic-
-    # compatible endpoint).
-    is_anthropic_route = anthropic_request.model.startswith("anthropic/") or (
-        anthropic_request.model.startswith("minimax/")
-        and MINIMAX_API_STYLE != "openai"
-    )
-    if anthropic_request.thinking and is_anthropic_route:
+    if anthropic_request.model.startswith("minimax/"):
+        # Pass MiniMax options at the wire boundary, avoiding LiteLLM's
+        # Claude-specific effort-to-budget conversion for unknown model IDs.
+        extra_body = {}
+        thinking = anthropic_request.thinking
+        if anthropic_request.model == "minimax/MiniMax-M3.1-Flash":
+            extra_body["thinking"] = {"type": "adaptive"}
+            effort = (anthropic_request.output_config or {}).get("effort")
+            effort = effort or anthropic_request.reasoning_effort or "max"
+            if MINIMAX_API_STYLE == "openai":
+                extra_body["reasoning_effort"] = effort
+            else:
+                extra_body["output_config"] = {"effort": effort}
+        elif thinking:
+            extra_body["thinking"] = thinking.model_dump(exclude_none=True)
+        # Omit effort for M3; omitted thinking keeps each protocol's default.
+        if extra_body:
+            litellm_request["extra_body"] = extra_body
+    elif anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
         litellm_request["thinking"] = anthropic_request.thinking.model_dump(
             exclude_none=True
         )
@@ -1276,6 +1337,7 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
 
 @app.post("/v1/messages")
 async def create_message(request: MessagesRequest, raw_request: Request):
+    minimax_client = None
     try:
         # print the body here
         body = await raw_request.body()
@@ -1325,6 +1387,10 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 )
             else:
                 litellm_request["api_base"] = MINIMAX_ANTHROPIC_BASE_URL
+                minimax_client = (
+                    MiniMaxAsyncHTTPHandler() if request.stream else MiniMaxHTTPHandler()
+                )
+                litellm_request["client"] = minimax_client
                 logger.debug(
                     f"Using MiniMax API key and Anthropic-compatible base URL {MINIMAX_ANTHROPIC_BASE_URL} for model: {request.model}"
                 )
@@ -1557,6 +1623,7 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             return StreamingResponse(
                 handle_streaming(response_generator, request),
                 media_type="text/event-stream",
+                background=BackgroundTask(minimax_client.close) if minimax_client else None,
             )
         else:
             # Use LiteLLM for regular completion
@@ -1573,6 +1640,9 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             )
             start_time = time.time()
             litellm_response = litellm.completion(**litellm_request)
+            if minimax_client:
+                minimax_client.close()
+                minimax_client = None
             logger.debug(
                 f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s"
             )
@@ -1583,6 +1653,11 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             return anthropic_response
 
     except Exception as e:
+        if minimax_client:
+            if isinstance(minimax_client, AsyncHTTPHandler):
+                await minimax_client.close()
+            else:
+                minimax_client.close()
         import traceback
 
         error_traceback = traceback.format_exc()

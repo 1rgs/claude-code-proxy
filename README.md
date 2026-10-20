@@ -47,8 +47,8 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `minimax`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1`, or `MiniMax-M3` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini`, or `MiniMax-M2.7` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1`, or `MiniMax-M3.1-Flash` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini`, or `MiniMax-M3.1-Flash` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
    *   `MINIMAX_BASE_URL` (Optional): The MiniMax OpenAI-compatible endpoint. Defaults to `https://api.minimax.io/v1` (global); set to `https://api.minimaxi.com/v1` for the China region.
    *   `MINIMAX_ANTHROPIC_BASE_URL` (Optional): The MiniMax Anthropic-compatible endpoint. Defaults to `https://api.minimax.io/anthropic` (global); set to `https://api.minimaxi.com/anthropic` for the China region.
    *   `MINIMAX_API_STYLE` (Optional): Which MiniMax endpoint to route chat completions through. Defaults to `anthropic` (the Anthropic-compatible endpoint); set to `openai` to use the OpenAI-compatible endpoint.
@@ -110,8 +110,8 @@ The proxy automatically maps Claude models to the configured provider:
 
 | Claude Model | OpenAI default | Google mapping | MiniMax default |
 |--------------|----------------|----------------|-----------------|
-| haiku | openai/gpt-4.1-mini | gemini/[model-name] | minimax/MiniMax-M2.7 |
-| sonnet | openai/gpt-4.1 | gemini/[model-name] | minimax/MiniMax-M3 |
+| haiku | openai/gpt-4.1-mini | gemini/[model-name] | minimax/MiniMax-M3.1-Flash |
+| sonnet | openai/gpt-4.1 | gemini/[model-name] | minimax/MiniMax-M3.1-Flash |
 
 ### Supported Models
 
@@ -136,9 +136,24 @@ The following Gemini models are supported with automatic `gemini/` prefix handli
 - gemini-2.5-flash
 
 #### MiniMax Models
-The following MiniMax models are supported with automatic `minimax/` prefix handling:
+The current MiniMax models are:
+- MiniMax-M3.1-Flash (default)
 - MiniMax-M3
-- MiniMax-M2.7
+
+Explicit `MiniMax-*` and `minimax/` model IDs, including saved legacy/custom IDs,
+remain routable without replacement. `BIG_MODEL` and `SMALL_MODEL` overrides are
+preserved.
+
+Flash always uses adaptive thinking. The proxy accepts `output_config.effort`
+(or `reasoning_effort`) with `low`, `medium`, `high`, `xhigh`, or `max` (default),
+and sends the matching field for the selected protocol. Disabled thinking and
+unsupported effort values are rejected for Flash. Legacy `thinking.type=enabled`
+requests are translated to adaptive thinking. M3 ignores effort; omitted thinking
+retains the endpoint default (off for Anthropic-compatible, on for OpenAI-compatible).
+Explicit M3 adaptive/disabled thinking is forwarded.
+
+Run offline request/streaming transport tests with `uv run python -m unittest test_minimax`.
+These tests use the pinned LiteLLM and mocked HTTP transports without API calls.
 
 ### Model Prefix Handling
 The proxy automatically adds the appropriate prefix to model names:
@@ -200,8 +215,8 @@ PREFERRED_PROVIDER="anthropic"
 ```dotenv
 MINIMAX_API_KEY="your-minimax-key"
 PREFERRED_PROVIDER="minimax"
-# BIG_MODEL="MiniMax-M3" # Optional, it's the default for MiniMax pref
-# SMALL_MODEL="MiniMax-M2.7" # Optional, it's the default for MiniMax pref
+# BIG_MODEL="MiniMax-M3.1-Flash" # Optional, it's the default for MiniMax pref
+# SMALL_MODEL="MiniMax-M3.1-Flash" # Optional, it's the default for MiniMax pref
 # MINIMAX_ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" # Optional, it's the default (global)
 # MINIMAX_BASE_URL="https://api.minimax.io/v1" # Optional, the OpenAI-compatible endpoint
 # MINIMAX_API_STYLE="anthropic" # Optional, it's the default; set to "openai" for the OpenAI-compatible endpoint

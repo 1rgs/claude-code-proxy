@@ -160,6 +160,10 @@ The Anthropic route preserves thinking signatures and native result metadata;
 the OpenAI route maps thinking to `reasoning_content` and results to `tool` messages.
 OpenAI chat has no equivalent field for Anthropic signatures or `is_error` metadata.
 Both routes preserve multiple tool calls and streamed argument fragments.
+The Anthropic route retains native response block order and forwards native SSE,
+so separate thinking blocks keep their own signatures even when interleaved with
+text or tools. Base64 and URL images stay native on the Anthropic route and map
+to `image_url` content on the OpenAI route, including images in tool results.
 
 Run offline request/streaming transport tests with `uv run python -m unittest test_minimax`.
 These tests use the pinned LiteLLM and mocked HTTP transports without API calls.

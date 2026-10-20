@@ -116,7 +116,7 @@ class MiniMaxTransportTests(unittest.TestCase):
         thinking = {"type": "thinking", "thinking": "I should use both tools.", "signature": "opaque-signature-fixture"}
         tools = [{"type": "tool_use", "id": f"call_fixture_{i}", "name": "echo",
                   "input": {"text": f"value {i}", "nested": {"n": i}}} for i in range(2)]
-        blocks = [{"type": "text", "text": "Both done."}] if has_results else [thinking, *tools]
+        blocks = [{"type": "text", "text": "Both done."}] if has_results else getattr(self, "native_blocks", [thinking, *tools])
         if openai:
             calls = [{"id": block["id"], "type": "function", "function": {
                 "name": block["name"], "arguments": json.dumps(block["input"])
@@ -168,7 +168,15 @@ class MiniMaxTransportTests(unittest.TestCase):
                 events.extend([{"type": "message_delta", "delta": {"stop_reason": response["stop_reason"], "stop_sequence": None},
                                 "usage": {"output_tokens": 20}}, {"type": "message_stop"}])
                 data = "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n" for event in events)
-                return httpx.Response(200, text=data, headers={"content-type": "text/event-stream"}, request=request)
+                self.native_sse = data
+
+                class FragmentedStream(httpx.AsyncByteStream):
+                    async def __aiter__(self):
+                        raw = data.encode()
+                        for offset in range(0, len(raw), 37):
+                            yield raw[offset:offset + 37]
+
+                return httpx.Response(200, stream=FragmentedStream(), headers={"content-type": "text/event-stream"}, request=request)
         return httpx.Response(200, json=response, request=request)
 
     def decode_response(self, response, stream):
@@ -283,6 +291,74 @@ class MiniMaxTransportTests(unittest.TestCase):
                 _, wire = self.send(messages=messages, stream=stream)
                 self.assertEqual(wire["messages"], messages)
 
+    def test_native_multiple_thinking_blocks_preserve_order_and_signatures(self):
+        self.tool_fixture = True
+        self.native_blocks = [
+            {"type": "thinking", "thinking": "reasonA", "signature": "sigA"},
+            {"type": "text", "text": "textFirst"},
+            {"type": "tool_use", "id": "call_fixture_0", "name": "echo", "input": {"text": "first"}},
+            {"type": "thinking", "thinking": "reasonB", "signature": "sigB"},
+            {"type": "text", "text": "textSecond"},
+            {"type": "tool_use", "id": "call_fixture_1", "name": "echo", "input": {"text": "second"}},
+        ]
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                messages = [{"role": "user", "content": "Use echo twice"}]
+                payload = {"model": "MiniMax-M3.1-Flash", "max_tokens": 4096, "stream": stream,
+                           "messages": messages, "tools": [{"name": "echo", "input_schema": {"type": "object"}}]}
+                response = self.client.post("/v1/messages", json=payload)
+                first = self.decode_response(response, stream)
+                self.assertEqual(first["content"], self.native_blocks)
+                self.assertEqual(first["stop_reason"], "tool_use")
+                if stream:
+                    # Exact native events: indices, block order, boundaries and signatures.
+                    self.assertEqual(response.text, self.native_sse)
+                messages.extend([
+                    {"role": "assistant", "content": first["content"]},
+                    {"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": f"call_fixture_{i}", "content": "Done"} for i in range(2)
+                    ]},
+                ])
+                final = self.decode_response(self.client.post("/v1/messages", json=payload), stream)
+                self.assertEqual(final["content"], [{"type": "text", "text": "Both done."}])
+                self.assertEqual(self.calls[-1][1]["messages"], messages)
+
+    def test_image_wire_conversion_with_custom_models_and_tool_history(self):
+        images = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}},
+            {"type": "image", "source": {"type": "url", "url": "https://example.invalid/fixture.png"}},
+        ]
+        expected = [
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,aGVsbG8="}},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/fixture.png"}},
+        ]
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Inspect images"}, *images]},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Inspecting", "signature": "image-signature"},
+                {"type": "tool_use", "id": "call_image", "name": "inspect", "input": {"image": 1}},
+            ]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "call_image",
+                                           "content": [{"type": "text", "text": "Found"}, *images]}]},
+        ]
+        for style in ("anthropic", "openai"):
+            for stream in (False, True):
+                for model in ("minimax/custom-model", "MiniMax-custom"):
+                    with self.subTest(style=style, stream=stream, model=model), patch.object(server, "MINIMAX_API_STYLE", style):
+                        _, wire = self.send(model, messages=messages, stream=stream,
+                                            tools=[{"name": "inspect", "input_schema": {"type": "object"}}])
+                        self.assertEqual(wire["model"], model.removeprefix("minimax/"))
+                        if style == "anthropic":
+                            self.assertEqual(wire["messages"], messages)
+                        else:
+                            self.assertEqual(wire["messages"][0]["content"], [{"type": "text", "text": "Inspect images"}, *expected])
+                            assistant = wire["messages"][1]
+                            self.assertEqual(assistant["reasoning_content"], "Inspecting")
+                            self.assertEqual(assistant["tool_calls"][0]["id"], "call_image")
+                            self.assertEqual(json.loads(assistant["tool_calls"][0]["function"]["arguments"]), {"image": 1})
+                            self.assertEqual(wire["messages"][2], {"role": "tool", "tool_call_id": "call_image",
+                                                                  "content": [{"type": "text", "text": "Found"}, *expected]})
+
     def test_default_protocol_region_and_stream_matrix(self):
         for style in ("anthropic", "openai"):
             for host in ("api.minimax.io", "api.minimaxi.com"):
@@ -385,7 +461,7 @@ class MiniMaxTransportTests(unittest.TestCase):
         request = server.MessagesRequest(model="minimax/MiniMax-M3.1-Flash", max_tokens=4096,
             messages=[{"role": "user", "content": [{"type": "text", "text": "Hello"}, image]}])
         converted = server.convert_anthropic_to_litellm(request)
-        self.assertEqual(converted["messages"][0]["content"][1], image)
+        self.assertEqual(converted["extra_body"]["messages"][0]["content"][1], image)
 
 
 if __name__ == "__main__":

@@ -159,12 +159,43 @@ def minimax_anthropic_body(data):
 
 class MiniMaxHTTPHandler(HTTPHandler):
     def post(self, url, *, data, **kwargs):
-        return super().post(url, data=minimax_anthropic_body(data), **kwargs)
+        response = super().post(url, data=minimax_anthropic_body(data), **kwargs)
+        # LiteLLM groups thinking/text/tools into separate OpenAI fields, losing
+        # native block order. Retain the original response for this native route.
+        self.native_response = response.json()
+        return response
 
 
 class MiniMaxAsyncHTTPHandler(AsyncHTTPHandler):
     async def post(self, url, *, data, **kwargs):
-        return await super().post(url, data=minimax_anthropic_body(data), **kwargs)
+        self.native_response = await super().post(
+            url, data=minimax_anthropic_body(data), **kwargs
+        )
+        return self.native_response
+
+    async def stream_native_response(self):
+        # Forward native SSE before LiteLLM discards block indices/boundaries.
+        # Do not concatenate thinking/signatures or reorder interleaved blocks.
+        try:
+            async for chunk in self.native_response.aiter_bytes():
+                yield chunk
+        finally:
+            await self.native_response.aclose()
+
+
+def minimax_openai_content(blocks):
+    """Convert Anthropic images before applying the OpenAI wire override."""
+    converted = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "image":
+            source = block["source"]
+            url = source["url"] if source["type"] == "url" else (
+                f"data:{source['media_type']};base64,{source['data']}"
+            )
+            converted.append({"type": "image_url", "image_url": {"url": url}})
+        else:
+            converted.append(block)
+    return converted
 
 
 # Helper function to clean schema for Gemini
@@ -593,6 +624,9 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
             # LiteLLM's common input is OpenAI chat format, including tool roles.
             blocks = [block.model_dump(exclude_none=True) for block in content]
             ordinary = [block for block in blocks if block["type"] in ("text", "image")]
+            # Both LiteLLM providers validate the common OpenAI input format;
+            # the Anthropic wire override restores the original native blocks.
+            ordinary = minimax_openai_content(ordinary)
             assistant = {"role": msg.role, "content": ordinary or None}
             calls = [block for block in blocks if block["type"] == "tool_use"]
             thinking = [block for block in blocks if block["type"] == "thinking"]
@@ -612,6 +646,8 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
             for block in blocks:
                 if block["type"] == "tool_result":
                     result = block["content"]
+                    if isinstance(result, list):
+                        result = minimax_openai_content(result)
                     messages.append({
                         "role": "tool", "tool_call_id": block["tool_use_id"],
                         "content": result if isinstance(result, (str, list)) else json.dumps(result),
@@ -1736,8 +1772,14 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             # Ensure we use the async version for streaming
             response_generator = await litellm.acompletion(**litellm_request)
 
+            if minimax_client:
+                stream = minimax_client.stream_native_response()
+            elif request.model.startswith("minimax/"):
+                stream = handle_minimax_streaming(response_generator, request)
+            else:
+                stream = handle_streaming(response_generator, request)
             return StreamingResponse(
-                (handle_minimax_streaming if request.model.startswith("minimax/") else handle_streaming)(response_generator, request),
+                stream,
                 media_type="text/event-stream",
                 background=BackgroundTask(minimax_client.close) if minimax_client else None,
             )
@@ -1756,7 +1798,9 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             )
             start_time = time.time()
             litellm_response = litellm.completion(**litellm_request)
+            native_response = None
             if minimax_client:
+                native_response = minimax_client.native_response
                 minimax_client.close()
                 minimax_client = None
             logger.debug(
@@ -1764,9 +1808,9 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             )
 
             # Convert LiteLLM response to Anthropic format
-            anthropic_response = convert_litellm_to_anthropic(litellm_response, request)
-
-            return anthropic_response
+            if native_response is not None:
+                return MessagesResponse(**{**native_response, "model": request.model})
+            return convert_litellm_to_anthropic(litellm_response, request)
 
     except Exception as e:
         if minimax_client:

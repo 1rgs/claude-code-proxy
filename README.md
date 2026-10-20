@@ -42,17 +42,22 @@ A proxy server that lets you use Anthropic clients with Gemini, OpenAI, or Anthr
    *   `ANTHROPIC_API_KEY`: (Optional) Needed only if proxying *to* Anthropic models.
    *   `OPENAI_API_KEY`: Your OpenAI API key (Required if using the default OpenAI preference or as fallback).
    *   `GEMINI_API_KEY`: Your Google AI Studio (Gemini) API key (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
+   *   `MINIMAX_API_KEY`: Your MiniMax API key (Required if `PREFERRED_PROVIDER=minimax`).
    *   `USE_VERTEX_AUTH` (Optional): Set to `true` to use Application Default Credentials (ADC) will be used (no static API key required). Note: when USE_VERTEX_AUTH=true, you must configure `VERTEX_PROJECT` and `VERTEX_LOCATION`.
    *   `VERTEX_PROJECT` (Optional): Your Google Cloud Project ID (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
    *   `VERTEX_LOCATION` (Optional): The Google Cloud region for Vertex AI (e.g., `us-central1`) (Required if `PREFERRED_PROVIDER=google` and `USE_VERTEX_AUTH=true`).
-   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, or `anthropic`. This determines the primary backend for mapping `haiku`/`sonnet`.
-   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.5-pro-preview-03-25`. Ignored when `PREFERRED_PROVIDER=anthropic`.
-   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini` (if `PREFERRED_PROVIDER=openai`) or `gemini-2.0-flash`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `PREFERRED_PROVIDER` (Optional): Set to `openai` (default), `google`, `anthropic`, or `minimax`. This determines the primary backend for mapping `haiku`/`sonnet`.
+   *   `BIG_MODEL` (Optional): The model to map `sonnet` requests to. Defaults to `gpt-4.1`, or `MiniMax-M3.1-Flash` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `SMALL_MODEL` (Optional): The model to map `haiku` requests to. Defaults to `gpt-4.1-mini`, or `MiniMax-M3.1-Flash` when `PREFERRED_PROVIDER=minimax`. Ignored when `PREFERRED_PROVIDER=anthropic`.
+   *   `MINIMAX_BASE_URL` (Optional): The MiniMax OpenAI-compatible endpoint. Defaults to `https://api.minimax.io/v1` (global); set to `https://api.minimaxi.com/v1` for the China region.
+   *   `MINIMAX_ANTHROPIC_BASE_URL` (Optional): The MiniMax Anthropic-compatible endpoint. Defaults to `https://api.minimax.io/anthropic` (global); set to `https://api.minimaxi.com/anthropic` for the China region.
+   *   `MINIMAX_API_STYLE` (Optional): Which MiniMax endpoint to route chat completions through. Defaults to `anthropic` (the Anthropic-compatible endpoint); set to `openai` to use the OpenAI-compatible endpoint.
 
    **Mapping Logic:**
    - If `PREFERRED_PROVIDER=openai` (default), `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `openai/`.
    - If `PREFERRED_PROVIDER=google`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `gemini/` *if* those models are in the server's known `GEMINI_MODELS` list (otherwise falls back to OpenAI mapping).
    - If `PREFERRED_PROVIDER=anthropic`, `haiku`/`sonnet` requests are passed directly to Anthropic with the `anthropic/` prefix without remapping to different models.
+   - If `PREFERRED_PROVIDER=minimax`, `haiku`/`sonnet` map to `SMALL_MODEL`/`BIG_MODEL` prefixed with `minimax/`, and bare MiniMax models in the server's known `MINIMAX_MODELS` list are prefixed with `minimax/`. MiniMax requests use the MiniMax API key and are routed through the configured endpoint (the Anthropic-compatible one by default).
 
 4. **Run the server**:
    ```bash
@@ -101,12 +106,12 @@ docker run -d --env-file .env -p 8082:8082 ghcr.io/1rgs/claude-code-proxy:latest
 
 ## Model Mapping 🗺️
 
-The proxy automatically maps Claude models to either OpenAI or Gemini models based on the configured model:
+The proxy automatically maps Claude models to the configured provider:
 
-| Claude Model | Default Mapping | When BIG_MODEL/SMALL_MODEL is a Gemini model |
-|--------------|--------------|---------------------------|
-| haiku | openai/gpt-4o-mini | gemini/[model-name] |
-| sonnet | openai/gpt-4o | gemini/[model-name] |
+| Claude Model | OpenAI default | Google mapping | MiniMax default |
+|--------------|----------------|----------------|-----------------|
+| haiku | openai/gpt-4.1-mini | gemini/[model-name] | minimax/MiniMax-M3.1-Flash |
+| sonnet | openai/gpt-4.1 | gemini/[model-name] | minimax/MiniMax-M3.1-Flash |
 
 ### Supported Models
 
@@ -130,11 +135,45 @@ The following Gemini models are supported with automatic `gemini/` prefix handli
 - gemini-2.5-pro
 - gemini-2.5-flash
 
+#### MiniMax Models
+The current MiniMax models are:
+- MiniMax-M3.1-Flash (default)
+- MiniMax-M3
+
+Explicit `MiniMax-*` and `minimax/` model IDs, including saved legacy/custom IDs,
+remain routable without replacement. `BIG_MODEL` and `SMALL_MODEL` overrides are
+preserved.
+
+Flash always uses adaptive thinking. The proxy accepts `output_config.effort`
+(or `reasoning_effort`) with `low`, `medium`, `high`, `xhigh`, or `max` (default),
+and sends the matching field for the selected protocol. Disabled thinking and
+unsupported effort values are rejected for Flash. Legacy `thinking.type=enabled`
+requests are translated to adaptive thinking. M3 ignores effort; omitted thinking
+retains the endpoint default (off for Anthropic-compatible, on for OpenAI-compatible).
+Explicit M3 adaptive/disabled thinking is forwarded.
+
+For multi-turn tool use, append the complete assistant `content` to history,
+including thinking and tool-use blocks, and return each result with its original
+`tool_use_id`. Keep the `tools` definitions on continuation requests: the pinned
+LiteLLM Anthropic adapter requires them when tool history is present.
+The Anthropic route preserves thinking signatures and native result metadata;
+the OpenAI route maps thinking to `reasoning_content` and results to `tool` messages.
+OpenAI chat has no equivalent field for Anthropic signatures or `is_error` metadata.
+Both routes preserve multiple tool calls and streamed argument fragments.
+The Anthropic route retains native response block order and forwards native SSE,
+so separate thinking blocks keep their own signatures even when interleaved with
+text or tools. Base64 and URL images stay native on the Anthropic route and map
+to `image_url` content on the OpenAI route, including images in tool results.
+
+Run offline request/streaming transport tests with `uv run python -m unittest test_minimax`.
+These tests use the pinned LiteLLM and mocked HTTP transports without API calls.
+
 ### Model Prefix Handling
 The proxy automatically adds the appropriate prefix to model names:
 - OpenAI models get the `openai/` prefix
 - Gemini models get the `gemini/` prefix
-- The BIG_MODEL and SMALL_MODEL will get the appropriate prefix based on whether they're in the OpenAI or Gemini model lists
+- MiniMax models get the `minimax/` prefix
+- The BIG_MODEL and SMALL_MODEL use the prefix for the configured provider
 
 For example:
 - `gpt-4o` becomes `openai/gpt-4o`
@@ -184,6 +223,19 @@ PREFERRED_PROVIDER="anthropic"
 ```
 
 *Use case: This mode enables you to use the proxy infrastructure (for logging, middleware, request/response processing, etc.) while still using actual Anthropic models rather than being forced to remap to OpenAI or Gemini.*
+
+**Example 3b: Prefer MiniMax**
+```dotenv
+MINIMAX_API_KEY="your-minimax-key"
+PREFERRED_PROVIDER="minimax"
+# BIG_MODEL="MiniMax-M3.1-Flash" # Optional, it's the default for MiniMax pref
+# SMALL_MODEL="MiniMax-M3.1-Flash" # Optional, it's the default for MiniMax pref
+# MINIMAX_ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic" # Optional, it's the default (global)
+# MINIMAX_BASE_URL="https://api.minimax.io/v1" # Optional, the OpenAI-compatible endpoint
+# MINIMAX_API_STYLE="anthropic" # Optional, it's the default; set to "openai" for the OpenAI-compatible endpoint
+```
+
+*Use case: MiniMax requests are routed through the MiniMax Anthropic-compatible endpoint by default, so Anthropic clients can talk to MiniMax models without any format translation.*
 
 **Example 4: Use Specific OpenAI Models**
 ```dotenv

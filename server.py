@@ -2,12 +2,14 @@ from fastapi import FastAPI, Request, HTTPException
 import uvicorn
 import logging
 import json
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Dict, Any, Optional, Union, Literal
 import httpx
 import os
 from fastapi.responses import JSONResponse, StreamingResponse
 import litellm
+from litellm.llms.custom_httpx.http_handler import HTTPHandler, AsyncHTTPHandler
+from starlette.background import BackgroundTask
 import uuid
 import time
 from dotenv import load_dotenv
@@ -89,6 +91,7 @@ app = FastAPI()
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY")
 
 # Get Vertex AI project and location from environment (if set)
 VERTEX_PROJECT = os.environ.get("VERTEX_PROJECT", "unset")
@@ -100,13 +103,29 @@ USE_VERTEX_AUTH = os.environ.get("USE_VERTEX_AUTH", "False").lower() == "true"
 # Get OpenAI base URL from environment (if set)
 OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL")
 
+# Get MiniMax base URLs from environment (if set)
+# OpenAI-compatible endpoint (global); use https://api.minimaxi.com/v1 for the China region.
+MINIMAX_BASE_URL = os.environ.get("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+# Anthropic-compatible endpoint (global); use https://api.minimaxi.com/anthropic for the China region.
+MINIMAX_ANTHROPIC_BASE_URL = os.environ.get(
+    "MINIMAX_ANTHROPIC_BASE_URL", "https://api.minimax.io/anthropic"
+)
+# Route MiniMax chat completions through the Anthropic-compatible endpoint by
+# default; set to "openai" to use the OpenAI-compatible endpoint instead.
+MINIMAX_API_STYLE = os.environ.get("MINIMAX_API_STYLE", "anthropic").lower()
+
 # Get preferred provider (default to openai)
 PREFERRED_PROVIDER = os.environ.get("PREFERRED_PROVIDER", "openai").lower()
 
 # Get model mapping configuration from environment
-# Default to latest OpenAI models if not set
-BIG_MODEL = os.environ.get("BIG_MODEL", "gpt-4.1")
-SMALL_MODEL = os.environ.get("SMALL_MODEL", "gpt-4.1-mini")
+DEFAULT_BIG_MODEL = (
+    "MiniMax-M3.1-Flash" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1"
+)
+DEFAULT_SMALL_MODEL = (
+    "MiniMax-M3.1-Flash" if PREFERRED_PROVIDER == "minimax" else "gpt-4.1-mini"
+)
+BIG_MODEL = os.environ.get("BIG_MODEL", DEFAULT_BIG_MODEL)
+SMALL_MODEL = os.environ.get("SMALL_MODEL", DEFAULT_SMALL_MODEL)
 
 # List of OpenAI models
 OPENAI_MODELS = [
@@ -126,6 +145,57 @@ OPENAI_MODELS = [
 
 # List of Gemini models
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"]
+
+# Current MiniMax models; explicit legacy/custom IDs remain valid requests.
+MINIMAX_MODELS = ["MiniMax-M3.1-Flash", "MiniMax-M3"]
+
+
+def minimax_anthropic_body(data):
+    """Flatten provider options after LiteLLM's Claude-specific validation."""
+    body = json.loads(data)
+    body.update(body.pop("extra_body", {}))
+    return json.dumps(body)
+
+
+class MiniMaxHTTPHandler(HTTPHandler):
+    def post(self, url, *, data, **kwargs):
+        response = super().post(url, data=minimax_anthropic_body(data), **kwargs)
+        # LiteLLM groups thinking/text/tools into separate OpenAI fields, losing
+        # native block order. Retain the original response for this native route.
+        self.native_response = response.json()
+        return response
+
+
+class MiniMaxAsyncHTTPHandler(AsyncHTTPHandler):
+    async def post(self, url, *, data, **kwargs):
+        self.native_response = await super().post(
+            url, data=minimax_anthropic_body(data), **kwargs
+        )
+        return self.native_response
+
+    async def stream_native_response(self):
+        # Forward native SSE before LiteLLM discards block indices/boundaries.
+        # Do not concatenate thinking/signatures or reorder interleaved blocks.
+        try:
+            async for chunk in self.native_response.aiter_bytes():
+                yield chunk
+        finally:
+            await self.native_response.aclose()
+
+
+def minimax_openai_content(blocks):
+    """Convert Anthropic images before applying the OpenAI wire override."""
+    converted = []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "image":
+            source = block["source"]
+            url = source["url"] if source["type"] == "url" else (
+                f"data:{source['media_type']};base64,{source['data']}"
+            )
+            converted.append({"type": "image_url", "image_url": {"url": url}})
+        else:
+            converted.append(block)
+    return converted
 
 
 # Helper function to clean schema for Gemini
@@ -174,10 +244,17 @@ class ContentBlockToolUse(BaseModel):
     input: Dict[str, Any]
 
 
+class ContentBlockThinking(BaseModel):
+    type: Literal["thinking"]
+    thinking: str
+    signature: Optional[str] = None
+
+
 class ContentBlockToolResult(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any], Any]
+    is_error: Optional[bool] = None
 
 
 class SystemContent(BaseModel):
@@ -195,6 +272,7 @@ class Message(BaseModel):
                 ContentBlockImage,
                 ContentBlockToolUse,
                 ContentBlockToolResult,
+                ContentBlockThinking,
             ]
         ],
     ]
@@ -207,7 +285,9 @@ class Tool(BaseModel):
 
 
 class ThinkingConfig(BaseModel):
-    enabled: bool = True
+    type: Optional[str] = None
+    enabled: Optional[bool] = None
+    budget_tokens: Optional[int] = None
 
 
 class MessagesRequest(BaseModel):
@@ -224,7 +304,28 @@ class MessagesRequest(BaseModel):
     tools: Optional[List[Tool]] = None
     tool_choice: Optional[Dict[str, Any]] = None
     thinking: Optional[ThinkingConfig] = None
+    output_config: Optional[Dict[str, Any]] = None
+    reasoning_effort: Optional[str] = None
     original_model: Optional[str] = None  # Will store the original model name
+
+    @model_validator(mode="after")
+    def validate_minimax_options(self):
+        if self.model == "minimax/MiniMax-M3.1-Flash":
+            if self.thinking and (
+                self.thinking.type not in (None, "adaptive", "enabled")
+                or self.thinking.enabled is False
+            ):
+                raise ValueError("MiniMax-M3.1-Flash requires adaptive thinking")
+            efforts = [self.reasoning_effort, (self.output_config or {}).get("effort")]
+            if any(
+                effort is not None
+                and effort not in ("low", "medium", "high", "xhigh", "max")
+                for effort in efforts
+            ):
+                raise ValueError(
+                    "MiniMax-M3.1-Flash effort must be low, medium, high, xhigh or max"
+                )
+        return self
 
     @field_validator("model")
     def validate_model_field(cls, v, info):  # Renamed to avoid conflict
@@ -243,10 +344,16 @@ class MessagesRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
+        elif clean_v.startswith("minimax/"):
+            clean_v = clean_v[8:]
 
         # --- Mapping Logic --- START ---
         mapped = False
-        if PREFERRED_PROVIDER == "anthropic":
+        if v.startswith("minimax/") or v.startswith("MiniMax-"):
+            # Explicit MiniMax IDs must not be remapped, including saved/custom IDs.
+            new_model = v if v.startswith("minimax/") else f"minimax/{v}"
+            mapped = True
+        elif PREFERRED_PROVIDER == "anthropic":
             # Don't remap to big/small models, just add the prefix
             new_model = f"anthropic/{clean_v}"
             mapped = True
@@ -255,6 +362,9 @@ class MessagesRequest(BaseModel):
         elif "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{SMALL_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -265,6 +375,9 @@ class MessagesRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{BIG_MODEL.removeprefix('minimax/')}"
+                mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
@@ -273,6 +386,9 @@ class MessagesRequest(BaseModel):
         elif not mapped:
             if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
+                mapped = True  # Technically mapped to add prefix
+            elif clean_v in MINIMAX_MODELS and not v.startswith("minimax/"):
+                new_model = f"minimax/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
             elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
@@ -283,7 +399,7 @@ class MessagesRequest(BaseModel):
             logger.debug(f"📌 MODEL MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
             # If no mapping occurred and no prefix exists, log warning or decide default
-            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+            if not v.startswith(("openai/", "gemini/", "anthropic/", "minimax/")):
                 logger.warning(
                     f"⚠️ No prefix or mapping rule for model: '{original_model}'. Using as is."
                 )
@@ -326,13 +442,22 @@ class TokenCountRequest(BaseModel):
             clean_v = clean_v[7:]
         elif clean_v.startswith("gemini/"):
             clean_v = clean_v[7:]
+        elif clean_v.startswith("minimax/"):
+            clean_v = clean_v[8:]
 
         # --- Mapping Logic --- START ---
         mapped = False
+        if v.startswith("minimax/") or v.startswith("MiniMax-"):
+            # Keep token-count routing consistent with explicit message requests.
+            new_model = v if v.startswith("minimax/") else f"minimax/{v}"
+            mapped = True
         # Map Haiku to SMALL_MODEL based on provider preference
-        if "haiku" in clean_v.lower():
+        elif "haiku" in clean_v.lower():
             if PREFERRED_PROVIDER == "google" and SMALL_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{SMALL_MODEL}"
+                mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{SMALL_MODEL.removeprefix('minimax/')}"
                 mapped = True
             else:
                 new_model = f"openai/{SMALL_MODEL}"
@@ -343,6 +468,9 @@ class TokenCountRequest(BaseModel):
             if PREFERRED_PROVIDER == "google" and BIG_MODEL in GEMINI_MODELS:
                 new_model = f"gemini/{BIG_MODEL}"
                 mapped = True
+            elif PREFERRED_PROVIDER == "minimax":
+                new_model = f"minimax/{BIG_MODEL.removeprefix('minimax/')}"
+                mapped = True
             else:
                 new_model = f"openai/{BIG_MODEL}"
                 mapped = True
@@ -352,6 +480,9 @@ class TokenCountRequest(BaseModel):
             if clean_v in GEMINI_MODELS and not v.startswith("gemini/"):
                 new_model = f"gemini/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
+            elif clean_v in MINIMAX_MODELS and not v.startswith("minimax/"):
+                new_model = f"minimax/{clean_v}"
+                mapped = True  # Technically mapped to add prefix
             elif clean_v in OPENAI_MODELS and not v.startswith("openai/"):
                 new_model = f"openai/{clean_v}"
                 mapped = True  # Technically mapped to add prefix
@@ -360,7 +491,7 @@ class TokenCountRequest(BaseModel):
         if mapped:
             logger.debug(f"📌 TOKEN COUNT MAPPING: '{original_model}' ➡️ '{new_model}'")
         else:
-            if not v.startswith(("openai/", "gemini/", "anthropic/")):
+            if not v.startswith(("openai/", "gemini/", "anthropic/", "minimax/")):
                 logger.warning(
                     f"⚠️ No prefix or mapping rule for token count model: '{original_model}'. Using as is."
                 )
@@ -389,7 +520,7 @@ class MessagesResponse(BaseModel):
     id: str
     model: str
     role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]]
+    content: List[Union[ContentBlockText, ContentBlockToolUse, ContentBlockThinking]]
     type: Literal["message"] = "message"
     stop_reason: Optional[
         Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
@@ -489,6 +620,41 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     # Add conversation messages
     for idx, msg in enumerate(anthropic_request.messages):
         content = msg.content
+        if anthropic_request.model.startswith("minimax/") and isinstance(content, list):
+            # LiteLLM's common input is OpenAI chat format, including tool roles.
+            blocks = [block.model_dump(exclude_none=True) for block in content]
+            ordinary = [block for block in blocks if block["type"] in ("text", "image")]
+            # Both LiteLLM providers validate the common OpenAI input format;
+            # the Anthropic wire override restores the original native blocks.
+            ordinary = minimax_openai_content(ordinary)
+            assistant = {"role": msg.role, "content": ordinary or None}
+            calls = [block for block in blocks if block["type"] == "tool_use"]
+            thinking = [block for block in blocks if block["type"] == "thinking"]
+            if calls:
+                assistant["tool_calls"] = [
+                    {"id": block["id"], "type": "function", "function": {
+                        "name": block["name"], "arguments": json.dumps(block["input"])
+                    }} for block in calls
+                ]
+            if thinking:
+                assistant["reasoning_content"] = "".join(block["thinking"] for block in thinking)
+                if MINIMAX_API_STYLE != "openai":
+                    assistant["thinking_blocks"] = thinking
+            has_results = any(block["type"] == "tool_result" for block in blocks)
+            if (ordinary or calls or thinking) and not has_results:
+                messages.append(assistant)
+            for block in blocks:
+                if block["type"] == "tool_result":
+                    result = block["content"]
+                    if isinstance(result, list):
+                        result = minimax_openai_content(result)
+                    messages.append({
+                        "role": "tool", "tool_call_id": block["tool_use_id"],
+                        "content": result if isinstance(result, (str, list)) else json.dumps(result),
+                    })
+            if ordinary and has_results:
+                messages.append({"role": msg.role, "content": ordinary})
+            continue
         if isinstance(content, str):
             messages.append({"role": msg.role, "content": content})
         else:
@@ -641,18 +807,58 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
             f"Capping max_tokens to 16384 for OpenAI/Gemini model (original value: {anthropic_request.max_tokens})"
         )
 
+    # MiniMax exposes both an Anthropic-compatible and an OpenAI-compatible
+    # endpoint. Route the model through the matching LiteLLM provider so the
+    # request format and api_base are selected consistently downstream.
+    litellm_model = anthropic_request.model
+    if litellm_model.startswith("minimax/"):
+        model_suffix = litellm_model[len("minimax/") :]
+        if MINIMAX_API_STYLE == "openai":
+            litellm_model = f"openai/{model_suffix}"
+        else:
+            litellm_model = f"anthropic/{model_suffix}"
+
     # Create LiteLLM request dict
     litellm_request = {
-        "model": anthropic_request.model,  # it understands "anthropic/claude-x" format
+        "model": litellm_model,  # it understands "anthropic/claude-x" format
         "messages": messages,
         "max_completion_tokens": max_tokens,
         "temperature": anthropic_request.temperature,
         "stream": anthropic_request.stream,
     }
 
-    # Only include thinking field for Anthropic models
-    if anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
-        litellm_request["thinking"] = anthropic_request.thinking
+    if anthropic_request.model.startswith("minimax/"):
+        # Pass MiniMax options at the wire boundary, avoiding LiteLLM's
+        # Claude-specific effort-to-budget conversion for unknown model IDs.
+        extra_body = {}
+        if MINIMAX_API_STYLE != "openai":
+            # Keep native block order, tool-result metadata and opaque signatures.
+            # The scoped HTTP handler applies this after LiteLLM transformation.
+            extra_body["messages"] = [
+                message.model_dump(exclude_none=True)
+                for message in anthropic_request.messages
+            ]
+        else:
+            # The pinned OpenAI adapter otherwise strips assistant reasoning.
+            extra_body["messages"] = json.loads(json.dumps(messages))
+        thinking = anthropic_request.thinking
+        if anthropic_request.model == "minimax/MiniMax-M3.1-Flash":
+            extra_body["thinking"] = {"type": "adaptive"}
+            effort = (anthropic_request.output_config or {}).get("effort")
+            effort = effort or anthropic_request.reasoning_effort or "max"
+            if MINIMAX_API_STYLE == "openai":
+                extra_body["reasoning_effort"] = effort
+            else:
+                extra_body["output_config"] = {"effort": effort}
+        elif thinking:
+            extra_body["thinking"] = thinking.model_dump(exclude_none=True)
+        # Omit effort for M3; omitted thinking keeps each protocol's default.
+        if extra_body:
+            litellm_request["extra_body"] = extra_body
+    elif anthropic_request.thinking and anthropic_request.model.startswith("anthropic/"):
+        litellm_request["thinking"] = anthropic_request.thinking.model_dump(
+            exclude_none=True
+        )
 
     # Add optional parameters if present
     if anthropic_request.stop_sequences:
@@ -740,6 +946,8 @@ def convert_litellm_to_anthropic(
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         # Check if this is a Claude model (which supports content blocks)
         is_claude_model = clean_model.startswith("claude-")
@@ -804,6 +1012,14 @@ def convert_litellm_to_anthropic(
 
         # Create content list for Anthropic format
         content = []
+
+        if original_request.model.startswith("minimax/"):
+            data = message if isinstance(message, dict) else message.model_dump(exclude_none=True)
+            thinking_blocks = data.get("thinking_blocks") or []
+            if thinking_blocks:
+                content.extend(thinking_blocks)
+            elif data.get("reasoning_content"):
+                content.append({"type": "thinking", "thinking": data["reasoning_content"]})
 
         # Add text content block if present (text might be None or empty for pure tool call responses)
         if content_text is not None and content_text != "":
@@ -917,6 +1133,66 @@ def convert_litellm_to_anthropic(
             stop_reason="end_turn",
             usage=Usage(input_tokens=0, output_tokens=0),
         )
+
+
+async def handle_minimax_streaming(response_generator, original_request):
+    """Preserve reasoning/signatures and independently indexed tool deltas."""
+    def event(kind, **payload):
+        return f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n"
+
+    yield event("message_start", message={
+        "id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
+        "model": original_request.model, "content": [], "stop_reason": None,
+        "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0},
+    })
+    indexes = {}
+    input_tokens = output_tokens = 0
+    stop_reason = "end_turn"
+    try:
+        async for chunk in response_generator:
+            data = chunk.model_dump(exclude_none=True)
+            usage = data.get("usage") or {}
+            input_tokens = usage.get("prompt_tokens", input_tokens)
+            output_tokens = usage.get("completion_tokens", output_tokens)
+            for choice in data.get("choices", []):
+                delta = choice.get("delta") or {}
+                updates = []
+                thinking = delta.get("thinking_blocks") or []
+                if thinking:
+                    for block in thinking:
+                        if block.get("type") == "thinking":
+                            for field, kind in (("thinking", "thinking_delta"), ("signature", "signature_delta")):
+                                if block.get(field):
+                                    updates.append(("thinking", {"type": "thinking", "thinking": "", "signature": ""},
+                                                    {"type": kind, field: block[field]}))
+                elif delta.get("reasoning_content"):
+                    updates.append(("thinking", {"type": "thinking", "thinking": ""},
+                                    {"type": "thinking_delta", "thinking": delta["reasoning_content"]}))
+                if delta.get("content"):
+                    updates.append(("text", {"type": "text", "text": ""},
+                                    {"type": "text_delta", "text": delta["content"]}))
+                for call in delta.get("tool_calls") or []:
+                    function = call.get("function") or {}
+                    key = ("tool", call["index"])
+                    updates.append((key, {"type": "tool_use", "id": call.get("id", ""),
+                                          "name": function.get("name", ""), "input": {}},
+                                    {"type": "input_json_delta", "partial_json": function.get("arguments") or ""}))
+                for key, block, update in updates:
+                    if key not in indexes:
+                        indexes[key] = len(indexes)
+                        yield event("content_block_start", index=indexes[key], content_block=block)
+                    yield event("content_block_delta", index=indexes[key], delta=update)
+                reason = choice.get("finish_reason")
+                if reason:
+                    stop_reason = {"tool_calls": "tool_use", "length": "max_tokens"}.get(reason, "end_turn")
+        for index in indexes.values():
+            yield event("content_block_stop", index=index)
+        yield event("message_delta", delta={"stop_reason": stop_reason, "stop_sequence": None},
+                    usage={"input_tokens": input_tokens, "output_tokens": output_tokens})
+        yield event("message_stop")
+    except Exception as exc:
+        logger.error("MiniMax stream conversion failed: %s", exc)
+        yield event("error", error={"type": "api_error", "message": "Upstream stream failed"})
 
 
 async def handle_streaming(response_generator, original_request: MessagesRequest):
@@ -1213,6 +1489,7 @@ async def handle_streaming(response_generator, original_request: MessagesRequest
 
 @app.post("/v1/messages")
 async def create_message(request: MessagesRequest, raw_request: Request):
+    minimax_client = None
     try:
         # print the body here
         body = await raw_request.body()
@@ -1232,6 +1509,8 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         logger.debug(
             f"📊 PROCESSING REQUEST: Model={request.model}, Stream={request.stream}"
@@ -1251,6 +1530,22 @@ async def create_message(request: MessagesRequest, raw_request: Request):
                 )
             else:
                 logger.debug(f"Using OpenAI API key for model: {request.model}")
+        elif request.model.startswith("minimax/"):
+            litellm_request["api_key"] = MINIMAX_API_KEY
+            if MINIMAX_API_STYLE == "openai":
+                litellm_request["api_base"] = MINIMAX_BASE_URL
+                logger.debug(
+                    f"Using MiniMax API key and OpenAI-compatible base URL {MINIMAX_BASE_URL} for model: {request.model}"
+                )
+            else:
+                litellm_request["api_base"] = MINIMAX_ANTHROPIC_BASE_URL
+                minimax_client = (
+                    MiniMaxAsyncHTTPHandler() if request.stream else MiniMaxHTTPHandler()
+                )
+                litellm_request["client"] = minimax_client
+                logger.debug(
+                    f"Using MiniMax API key and Anthropic-compatible base URL {MINIMAX_ANTHROPIC_BASE_URL} for model: {request.model}"
+                )
         elif request.model.startswith("gemini/"):
             if USE_VERTEX_AUTH:
                 litellm_request["vertex_project"] = VERTEX_PROJECT
@@ -1477,9 +1772,16 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             # Ensure we use the async version for streaming
             response_generator = await litellm.acompletion(**litellm_request)
 
+            if minimax_client:
+                stream = minimax_client.stream_native_response()
+            elif request.model.startswith("minimax/"):
+                stream = handle_minimax_streaming(response_generator, request)
+            else:
+                stream = handle_streaming(response_generator, request)
             return StreamingResponse(
-                handle_streaming(response_generator, request),
+                stream,
                 media_type="text/event-stream",
+                background=BackgroundTask(minimax_client.close) if minimax_client else None,
             )
         else:
             # Use LiteLLM for regular completion
@@ -1496,16 +1798,26 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             )
             start_time = time.time()
             litellm_response = litellm.completion(**litellm_request)
+            native_response = None
+            if minimax_client:
+                native_response = minimax_client.native_response
+                minimax_client.close()
+                minimax_client = None
             logger.debug(
                 f"✅ RESPONSE RECEIVED: Model={litellm_request.get('model')}, Time={time.time() - start_time:.2f}s"
             )
 
             # Convert LiteLLM response to Anthropic format
-            anthropic_response = convert_litellm_to_anthropic(litellm_response, request)
-
-            return anthropic_response
+            if native_response is not None:
+                return MessagesResponse(**{**native_response, "model": request.model})
+            return convert_litellm_to_anthropic(litellm_response, request)
 
     except Exception as e:
+        if minimax_client:
+            if isinstance(minimax_client, AsyncHTTPHandler):
+                await minimax_client.close()
+            else:
+                minimax_client.close()
         import traceback
 
         error_traceback = traceback.format_exc()
@@ -1581,6 +1893,8 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             clean_model = clean_model[len("anthropic/") :]
         elif clean_model.startswith("openai/"):
             clean_model = clean_model[len("openai/") :]
+        elif clean_model.startswith("minimax/"):
+            clean_model = clean_model[len("minimax/") :]
 
         # Convert the messages to a format LiteLLM can understand
         converted_request = convert_anthropic_to_litellm(
@@ -1622,6 +1936,12 @@ async def count_tokens(request: TokenCountRequest, raw_request: Request):
             # Add custom base URL for OpenAI models if configured
             if request.model.startswith("openai/") and OPENAI_BASE_URL:
                 token_counter_args["api_base"] = OPENAI_BASE_URL
+            elif request.model.startswith("minimax/"):
+                token_counter_args["api_base"] = (
+                    MINIMAX_ANTHROPIC_BASE_URL
+                    if MINIMAX_API_STYLE != "openai"
+                    else MINIMAX_BASE_URL
+                )
 
             # Count tokens
             token_count = token_counter(**token_counter_args)

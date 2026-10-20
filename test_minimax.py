@@ -55,6 +55,8 @@ class MiniMaxTransportTests(unittest.TestCase):
         body = json.loads(request.content)
         self.calls.append((request, body))
         model = body["model"]
+        if getattr(self, "tool_fixture", False):
+            return self.tool_response(request, body)
         if request.url.path.endswith("/chat/completions"):
             response = {
                 "id": "chatcmpl-offline", "object": "chat.completion",
@@ -105,6 +107,181 @@ class MiniMaxTransportTests(unittest.TestCase):
         else:
             self.assertEqual(response.json()["content"][0]["text"], "Hello")
         return self.calls[-1]
+
+    def tool_response(self, request, body):
+        openai = request.url.path.endswith("/chat/completions")
+        has_results = any(message["role"] == "tool" or any(
+            block.get("type") == "tool_result" for block in (message.get("content") or []) if isinstance(block, dict)
+        ) for message in body["messages"])
+        thinking = {"type": "thinking", "thinking": "I should use both tools.", "signature": "opaque-signature-fixture"}
+        tools = [{"type": "tool_use", "id": f"call_fixture_{i}", "name": "echo",
+                  "input": {"text": f"value {i}", "nested": {"n": i}}} for i in range(2)]
+        blocks = [{"type": "text", "text": "Both done."}] if has_results else [thinking, *tools]
+        if openai:
+            calls = [{"id": block["id"], "type": "function", "function": {
+                "name": block["name"], "arguments": json.dumps(block["input"])
+            }} for block in tools]
+            message = {"role": "assistant", "content": "Both done."} if has_results else {
+                "role": "assistant", "content": None, "reasoning_content": thinking["thinking"], "tool_calls": calls,
+            }
+            reason = "stop" if has_results else "tool_calls"
+            response = {"id": "chatcmpl-fixture", "object": "chat.completion", "created": 1,
+                        "model": body["model"], "choices": [{"index": 0, "message": message, "finish_reason": reason}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}}
+            if body.get("stream"):
+                deltas = [{"content": "Both done."}] if has_results else [
+                    {"reasoning_content": thinking["thinking"]},
+                    {"tool_calls": [{**call, "index": i, "function": {**call["function"], "arguments": ""}}
+                                    for i, call in enumerate(calls)]},
+                    *[{"tool_calls": [{"index": i, "function": {"arguments": call["function"]["arguments"][:12]}}
+                                      for i, call in enumerate(calls)]},
+                      {"tool_calls": [{"index": i, "function": {"arguments": call["function"]["arguments"][12:]}}
+                                      for i, call in enumerate(calls)]}],
+                ]
+                chunks = [{"id": response["id"], "object": "chat.completion.chunk", "created": 1, "model": body["model"],
+                           "choices": [{"index": 0, "delta": delta, "finish_reason": None}]} for delta in deltas]
+                chunks.append({"id": response["id"], "object": "chat.completion.chunk", "created": 1, "model": body["model"],
+                               "choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
+                data = "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+                return httpx.Response(200, text=data, headers={"content-type": "text/event-stream"}, request=request)
+        else:
+            response = {"id": "msg_fixture", "type": "message", "role": "assistant", "model": body["model"],
+                        "content": blocks, "stop_reason": "end_turn" if has_results else "tool_use", "stop_sequence": None,
+                        "usage": {"input_tokens": 10, "output_tokens": 20}}
+            if body.get("stream"):
+                events = [{"type": "message_start", "message": {**response, "content": [], "stop_reason": None}}]
+                for i, block in enumerate(blocks):
+                    if block["type"] == "thinking":
+                        start = {"type": "thinking", "thinking": "", "signature": ""}
+                        deltas = [{"type": "thinking_delta", "thinking": block["thinking"]},
+                                  {"type": "signature_delta", "signature": block["signature"]}]
+                    elif block["type"] == "tool_use":
+                        start = {**block, "input": {}}
+                        arguments = json.dumps(block["input"])
+                        deltas = [{"type": "input_json_delta", "partial_json": part} for part in (arguments[:12], arguments[12:])]
+                    else:
+                        start = {"type": "text", "text": ""}
+                        deltas = [{"type": "text_delta", "text": block["text"]}]
+                    events.append({"type": "content_block_start", "index": i, "content_block": start})
+                    events.extend({"type": "content_block_delta", "index": i, "delta": delta} for delta in deltas)
+                    events.append({"type": "content_block_stop", "index": i})
+                events.extend([{"type": "message_delta", "delta": {"stop_reason": response["stop_reason"], "stop_sequence": None},
+                                "usage": {"output_tokens": 20}}, {"type": "message_stop"}])
+                data = "".join("event: " + event["type"] + "\ndata: " + json.dumps(event) + "\n\n" for event in events)
+                return httpx.Response(200, text=data, headers={"content-type": "text/event-stream"}, request=request)
+        return httpx.Response(200, json=response, request=request)
+
+    def decode_response(self, response, stream):
+        self.assertEqual(response.status_code, 200, response.text)
+        if not stream:
+            return response.json()
+        blocks, arguments, stopped = {}, {}, set()
+        result = {"content": []}
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        self.assertEqual(events[-1]["type"], "message_stop", response.text)
+        for event in events:
+            kind = event["type"]
+            if kind == "content_block_start":
+                index = event["index"]
+                self.assertNotIn(index, blocks)
+                blocks[index] = event["content_block"]
+                arguments[index] = ""
+            elif kind == "content_block_delta":
+                index, delta = event["index"], event["delta"]
+                self.assertNotIn(index, stopped)
+                self.assertIn(index, blocks)
+                if delta["type"] == "input_json_delta":
+                    arguments[index] += delta["partial_json"]
+                else:
+                    field = {"text_delta": "text", "thinking_delta": "thinking", "signature_delta": "signature"}[delta["type"]]
+                    blocks[index][field] = blocks[index].get(field, "") + delta[field]
+            elif kind == "content_block_stop":
+                self.assertNotIn(event["index"], stopped)
+                stopped.add(event["index"])
+            elif kind == "message_delta":
+                result.update(event["delta"])
+        self.assertEqual(stopped, set(blocks))
+        for index, block in blocks.items():
+            if block["type"] == "tool_use":
+                block["input"] = json.loads(arguments[index])
+        result["content"] = list(blocks.values())
+        return result
+
+    def test_multiturn_tools_and_thinking_actual_wire(self):
+        self.tool_fixture = True
+        for style in ("anthropic", "openai"):
+            for stream in (False, True):
+                with self.subTest(style=style, stream=stream), patch.object(server, "MINIMAX_API_STYLE", style):
+                    messages = [{"role": "user", "content": "Use echo twice"}]
+                    payload = {"model": "MiniMax-M3.1-Flash", "max_tokens": 4096, "stream": stream,
+                               "messages": messages, "tools": [{"name": "echo", "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}}}]}
+                    first = self.decode_response(self.client.post("/v1/messages", json=payload), stream)
+                    self.assertEqual(first["stop_reason"], "tool_use")
+                    self.assertEqual(first["content"][0]["type"], "thinking")
+                    self.assertEqual(first["content"][0]["thinking"], "I should use both tools.")
+                    if style == "anthropic":
+                        self.assertEqual(first["content"][0]["signature"], "opaque-signature-fixture")
+                    calls = [block for block in first["content"] if block["type"] == "tool_use"]
+                    self.assertEqual(len(calls), 2)
+                    for i, call in enumerate(calls):
+                        self.assertEqual(call, {"type": "tool_use", "id": f"call_fixture_{i}", "name": "echo",
+                                                "input": {"text": f"value {i}", "nested": {"n": i}}})
+                    results = [{"type": "tool_result", "tool_use_id": call["id"],
+                                "content": [{"type": "text", "text": f"Done {i}"}], "is_error": False} for i, call in enumerate(calls)]
+                    messages.extend([{"role": "assistant", "content": first["content"]}, {"role": "user", "content": results}])
+                    second = self.decode_response(self.client.post("/v1/messages", json=payload), stream)
+                    self.assertEqual(second["stop_reason"], "end_turn")
+                    self.assertEqual(second["content"], [{"type": "text", "text": "Both done."}])
+                    wire = self.calls[-1][1]
+                    if style == "anthropic":
+                        self.assertEqual(wire["messages"], messages)
+                    else:
+                        self.assertEqual([message["role"] for message in wire["messages"]], ["user", "assistant", "tool", "tool"])
+                        assistant = wire["messages"][1]
+                        self.assertEqual(assistant["reasoning_content"], "I should use both tools.")
+                        self.assertEqual(len(assistant["tool_calls"]), 2)
+                        for i, call in enumerate(assistant["tool_calls"]):
+                            self.assertEqual(call["id"], calls[i]["id"])
+                            self.assertEqual(call["function"]["name"], "echo")
+                            self.assertEqual(json.loads(call["function"]["arguments"]), calls[i]["input"])
+                            self.assertEqual(wire["messages"][i + 2]["tool_call_id"], calls[i]["id"])
+                            self.assertEqual(wire["messages"][i + 2]["content"], results[i]["content"])
+
+    def test_saved_tool_history_actual_wire(self):
+        messages = [
+            {"role": "user", "content": "Use echo"},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "tool_fixture", "name": "echo", "input": {"text": "hello"}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tool_fixture", "content": "Done", "is_error": True},
+                                         {"type": "text", "text": "Continue"}]},
+        ]
+        for style in ("anthropic", "openai"):
+            for stream in (False, True):
+                with self.subTest(style=style, stream=stream), patch.object(server, "MINIMAX_API_STYLE", style):
+                    _, wire = self.send(messages=messages, stream=stream, tools=[{
+                        "name": "echo", "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}}
+                    }])
+                    if style == "anthropic":
+                        self.assertEqual(wire["messages"], messages)
+                    else:
+                        self.assertEqual([message["role"] for message in wire["messages"]], ["user", "assistant", "tool", "user"])
+                        call = wire["messages"][1]["tool_calls"][0]
+                        self.assertEqual(call["id"], "tool_fixture")
+                        self.assertEqual(call["function"]["name"], "echo")
+                        self.assertEqual(json.loads(call["function"]["arguments"]), {"text": "hello"})
+                        self.assertEqual(wire["messages"][2], {"role": "tool", "tool_call_id": "tool_fixture", "content": "Done"})
+                        self.assertEqual(wire["messages"][3]["content"], [{"type": "text", "text": "Continue"}])
+
+    def test_saved_thinking_signature_actual_wire(self):
+        messages = [
+            {"role": "user", "content": "Think"},
+            {"role": "assistant", "content": [{"type": "thinking", "thinking": "Preserve me", "signature": "opaque-saved-signature"},
+                                               {"type": "text", "text": "Ready"}]},
+            {"role": "user", "content": "Continue"},
+        ]
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                _, wire = self.send(messages=messages, stream=stream)
+                self.assertEqual(wire["messages"], messages)
 
     def test_default_protocol_region_and_stream_matrix(self):
         for style in ("anthropic", "openai"):

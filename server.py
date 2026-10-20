@@ -213,10 +213,17 @@ class ContentBlockToolUse(BaseModel):
     input: Dict[str, Any]
 
 
+class ContentBlockThinking(BaseModel):
+    type: Literal["thinking"]
+    thinking: str
+    signature: Optional[str] = None
+
+
 class ContentBlockToolResult(BaseModel):
     type: Literal["tool_result"]
     tool_use_id: str
     content: Union[str, List[Dict[str, Any]], Dict[str, Any], List[Any], Any]
+    is_error: Optional[bool] = None
 
 
 class SystemContent(BaseModel):
@@ -234,6 +241,7 @@ class Message(BaseModel):
                 ContentBlockImage,
                 ContentBlockToolUse,
                 ContentBlockToolResult,
+                ContentBlockThinking,
             ]
         ],
     ]
@@ -481,7 +489,7 @@ class MessagesResponse(BaseModel):
     id: str
     model: str
     role: Literal["assistant"] = "assistant"
-    content: List[Union[ContentBlockText, ContentBlockToolUse]]
+    content: List[Union[ContentBlockText, ContentBlockToolUse, ContentBlockThinking]]
     type: Literal["message"] = "message"
     stop_reason: Optional[
         Literal["end_turn", "max_tokens", "stop_sequence", "tool_use"]
@@ -581,6 +589,36 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
     # Add conversation messages
     for idx, msg in enumerate(anthropic_request.messages):
         content = msg.content
+        if anthropic_request.model.startswith("minimax/") and isinstance(content, list):
+            # LiteLLM's common input is OpenAI chat format, including tool roles.
+            blocks = [block.model_dump(exclude_none=True) for block in content]
+            ordinary = [block for block in blocks if block["type"] in ("text", "image")]
+            assistant = {"role": msg.role, "content": ordinary or None}
+            calls = [block for block in blocks if block["type"] == "tool_use"]
+            thinking = [block for block in blocks if block["type"] == "thinking"]
+            if calls:
+                assistant["tool_calls"] = [
+                    {"id": block["id"], "type": "function", "function": {
+                        "name": block["name"], "arguments": json.dumps(block["input"])
+                    }} for block in calls
+                ]
+            if thinking:
+                assistant["reasoning_content"] = "".join(block["thinking"] for block in thinking)
+                if MINIMAX_API_STYLE != "openai":
+                    assistant["thinking_blocks"] = thinking
+            has_results = any(block["type"] == "tool_result" for block in blocks)
+            if (ordinary or calls or thinking) and not has_results:
+                messages.append(assistant)
+            for block in blocks:
+                if block["type"] == "tool_result":
+                    result = block["content"]
+                    messages.append({
+                        "role": "tool", "tool_call_id": block["tool_use_id"],
+                        "content": result if isinstance(result, (str, list)) else json.dumps(result),
+                    })
+            if ordinary and has_results:
+                messages.append({"role": msg.role, "content": ordinary})
+            continue
         if isinstance(content, str):
             messages.append({"role": msg.role, "content": content})
         else:
@@ -757,6 +795,16 @@ def convert_anthropic_to_litellm(anthropic_request: MessagesRequest) -> Dict[str
         # Pass MiniMax options at the wire boundary, avoiding LiteLLM's
         # Claude-specific effort-to-budget conversion for unknown model IDs.
         extra_body = {}
+        if MINIMAX_API_STYLE != "openai":
+            # Keep native block order, tool-result metadata and opaque signatures.
+            # The scoped HTTP handler applies this after LiteLLM transformation.
+            extra_body["messages"] = [
+                message.model_dump(exclude_none=True)
+                for message in anthropic_request.messages
+            ]
+        else:
+            # The pinned OpenAI adapter otherwise strips assistant reasoning.
+            extra_body["messages"] = json.loads(json.dumps(messages))
         thinking = anthropic_request.thinking
         if anthropic_request.model == "minimax/MiniMax-M3.1-Flash":
             extra_body["thinking"] = {"type": "adaptive"}
@@ -929,6 +977,14 @@ def convert_litellm_to_anthropic(
         # Create content list for Anthropic format
         content = []
 
+        if original_request.model.startswith("minimax/"):
+            data = message if isinstance(message, dict) else message.model_dump(exclude_none=True)
+            thinking_blocks = data.get("thinking_blocks") or []
+            if thinking_blocks:
+                content.extend(thinking_blocks)
+            elif data.get("reasoning_content"):
+                content.append({"type": "thinking", "thinking": data["reasoning_content"]})
+
         # Add text content block if present (text might be None or empty for pure tool call responses)
         if content_text is not None and content_text != "":
             content.append({"type": "text", "text": content_text})
@@ -1041,6 +1097,66 @@ def convert_litellm_to_anthropic(
             stop_reason="end_turn",
             usage=Usage(input_tokens=0, output_tokens=0),
         )
+
+
+async def handle_minimax_streaming(response_generator, original_request):
+    """Preserve reasoning/signatures and independently indexed tool deltas."""
+    def event(kind, **payload):
+        return f"event: {kind}\ndata: {json.dumps({'type': kind, **payload})}\n\n"
+
+    yield event("message_start", message={
+        "id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
+        "model": original_request.model, "content": [], "stop_reason": None,
+        "stop_sequence": None, "usage": {"input_tokens": 0, "output_tokens": 0},
+    })
+    indexes = {}
+    input_tokens = output_tokens = 0
+    stop_reason = "end_turn"
+    try:
+        async for chunk in response_generator:
+            data = chunk.model_dump(exclude_none=True)
+            usage = data.get("usage") or {}
+            input_tokens = usage.get("prompt_tokens", input_tokens)
+            output_tokens = usage.get("completion_tokens", output_tokens)
+            for choice in data.get("choices", []):
+                delta = choice.get("delta") or {}
+                updates = []
+                thinking = delta.get("thinking_blocks") or []
+                if thinking:
+                    for block in thinking:
+                        if block.get("type") == "thinking":
+                            for field, kind in (("thinking", "thinking_delta"), ("signature", "signature_delta")):
+                                if block.get(field):
+                                    updates.append(("thinking", {"type": "thinking", "thinking": "", "signature": ""},
+                                                    {"type": kind, field: block[field]}))
+                elif delta.get("reasoning_content"):
+                    updates.append(("thinking", {"type": "thinking", "thinking": ""},
+                                    {"type": "thinking_delta", "thinking": delta["reasoning_content"]}))
+                if delta.get("content"):
+                    updates.append(("text", {"type": "text", "text": ""},
+                                    {"type": "text_delta", "text": delta["content"]}))
+                for call in delta.get("tool_calls") or []:
+                    function = call.get("function") or {}
+                    key = ("tool", call["index"])
+                    updates.append((key, {"type": "tool_use", "id": call.get("id", ""),
+                                          "name": function.get("name", ""), "input": {}},
+                                    {"type": "input_json_delta", "partial_json": function.get("arguments") or ""}))
+                for key, block, update in updates:
+                    if key not in indexes:
+                        indexes[key] = len(indexes)
+                        yield event("content_block_start", index=indexes[key], content_block=block)
+                    yield event("content_block_delta", index=indexes[key], delta=update)
+                reason = choice.get("finish_reason")
+                if reason:
+                    stop_reason = {"tool_calls": "tool_use", "length": "max_tokens"}.get(reason, "end_turn")
+        for index in indexes.values():
+            yield event("content_block_stop", index=index)
+        yield event("message_delta", delta={"stop_reason": stop_reason, "stop_sequence": None},
+                    usage={"input_tokens": input_tokens, "output_tokens": output_tokens})
+        yield event("message_stop")
+    except Exception as exc:
+        logger.error("MiniMax stream conversion failed: %s", exc)
+        yield event("error", error={"type": "api_error", "message": "Upstream stream failed"})
 
 
 async def handle_streaming(response_generator, original_request: MessagesRequest):
@@ -1621,7 +1737,7 @@ async def create_message(request: MessagesRequest, raw_request: Request):
             response_generator = await litellm.acompletion(**litellm_request)
 
             return StreamingResponse(
-                handle_streaming(response_generator, request),
+                (handle_minimax_streaming if request.model.startswith("minimax/") else handle_streaming)(response_generator, request),
                 media_type="text/event-stream",
                 background=BackgroundTask(minimax_client.close) if minimax_client else None,
             )

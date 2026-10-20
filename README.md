@@ -152,6 +152,15 @@ requests are translated to adaptive thinking. M3 ignores effort; omitted thinkin
 retains the endpoint default (off for Anthropic-compatible, on for OpenAI-compatible).
 Explicit M3 adaptive/disabled thinking is forwarded.
 
+For multi-turn tool use, append the complete assistant `content` to history,
+including thinking and tool-use blocks, and return each result with its original
+`tool_use_id`. Keep the `tools` definitions on continuation requests: the pinned
+LiteLLM Anthropic adapter requires them when tool history is present.
+The Anthropic route preserves thinking signatures and native result metadata;
+the OpenAI route maps thinking to `reasoning_content` and results to `tool` messages.
+OpenAI chat has no equivalent field for Anthropic signatures or `is_error` metadata.
+Both routes preserve multiple tool calls and streamed argument fragments.
+
 Run offline request/streaming transport tests with `uv run python -m unittest test_minimax`.
 These tests use the pinned LiteLLM and mocked HTTP transports without API calls.
 
